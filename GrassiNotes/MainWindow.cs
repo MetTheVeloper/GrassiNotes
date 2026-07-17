@@ -1003,18 +1003,6 @@ public sealed class MainWindow : Window
 		if (detected != "Auto") ApplyParagraphDirection(paragraph, detected == "RTL", false);
 	}
 
-	private static List? OwningList(Paragraph paragraph)
-	{
-		DependencyObject? current = paragraph.Parent;
-		while (current != null)
-		{
-			if (current is List list) return list;
-			if (current is FrameworkContentElement fce) current = fce.Parent;
-			else break;
-		}
-		return null;
-	}
-
 	private static string EffectiveDirection(Paragraph paragraph)
 	{
 		string explicitDirection = EditorMetadata.GetExplicitDirection(paragraph);
@@ -1028,41 +1016,11 @@ public sealed class MainWindow : Window
 	{
 		System.Windows.FlowDirection flow = rtl ? System.Windows.FlowDirection.RightToLeft : System.Windows.FlowDirection.LeftToRight;
 		TextAlignment alignment = rtl ? TextAlignment.Right : TextAlignment.Left;
-		paragraph.SetCurrentValue(FrameworkElement.FlowDirectionProperty, flow);
-		paragraph.SetCurrentValue(Block.TextAlignmentProperty, alignment);
-		if (explicitChoice) EditorMetadata.SetExplicitDirection(paragraph, rtl ? "RTL" : "LTR");
-
-		List? list = OwningList(paragraph);
-		if (list != null)
-		{
-			list.SetCurrentValue(FrameworkElement.FlowDirectionProperty, flow);
-			list.SetCurrentValue(Block.TextAlignmentProperty, alignment);
-			list.MarkerOffset = 18.0;
-			if (explicitChoice) EditorMetadata.SetExplicitDirection(list, rtl ? "RTL" : "LTR");
-			foreach (ListItem item in list.ListItems)
-			{
-				item.SetCurrentValue(FrameworkElement.FlowDirectionProperty, flow);
-				if (explicitChoice) EditorMetadata.SetExplicitDirection(item, rtl ? "RTL" : "LTR");
-				foreach (Paragraph child in EnumerateParagraphs(item.Blocks))
-				{
-					child.SetCurrentValue(FrameworkElement.FlowDirectionProperty, flow);
-					child.SetCurrentValue(Block.TextAlignmentProperty, alignment);
-					if (explicitChoice) EditorMetadata.SetExplicitDirection(child, rtl ? "RTL" : "LTR");
-				}
-			}
-		}
-	}
-
-	private void ApplySelectionDirectionFormatting(bool rtl)
-	{
-		System.Windows.FlowDirection flow = rtl ? System.Windows.FlowDirection.RightToLeft : System.Windows.FlowDirection.LeftToRight;
-		TextAlignment alignment = rtl ? TextAlignment.Right : TextAlignment.Left;
-		try
-		{
-			_editor.Selection.ApplyPropertyValue(FrameworkElement.FlowDirectionProperty, flow);
-			_editor.Selection.ApplyPropertyValue(Block.TextAlignmentProperty, alignment);
-		}
-		catch { }
+		ParagraphDirectionFormatter.Apply(
+			paragraph,
+			flow,
+			alignment,
+			explicitChoice ? (rtl ? "RTL" : "LTR") : null);
 	}
 
 	private void SetSelectionDirection(bool rtl)
@@ -1072,7 +1030,6 @@ public sealed class MainWindow : Window
 		_suppress = true;
 		try
 		{
-			ApplySelectionDirectionFormatting(rtl);
 			foreach (Paragraph paragraph in paragraphs) ApplyParagraphDirection(paragraph, rtl, true);
 		}
 		finally { _suppress = false; }
@@ -1091,7 +1048,7 @@ public sealed class MainWindow : Window
 			_suppress = true;
 			try { ApplyParagraphDirection(paragraph, direction == "RTL", makeExplicit || EditorMetadata.GetExplicitDirection(paragraph) != "Auto"); }
 			finally { _suppress = false; }
-		}, DispatcherPriority.ContextIdle);
+		}, DispatcherPriority.Input);
 	}
 
 	private void ToggleList(RoutedUICommand command)
@@ -1109,7 +1066,7 @@ public sealed class MainWindow : Window
 				ApplyParagraphDirection(after, direction, explicitDirection != "Auto");
 			}
 			UpdateFormatState();
-		}, DispatcherPriority.ContextIdle);
+		}, DispatcherPriority.Input);
 	}
 
 	private void OnPasting(object sender, DataObjectPastingEventArgs e)
@@ -1721,7 +1678,8 @@ public sealed class MainWindow : Window
 			Paragraph? before = _editor.CaretPosition.Paragraph;
 			if (before == null) return;
 			string explicitDirection = EditorMetadata.GetExplicitDirection(before);
-			string effectiveDirection = EffectiveDirection(before);
+			System.Windows.FlowDirection inheritedFlowDirection = before.FlowDirection;
+			TextAlignment inheritedTextAlignment = before.TextAlignment;
 			base.Dispatcher.BeginInvoke((Action)delegate
 			{
 				Paragraph? after = _editor.CaretPosition.Paragraph;
@@ -1729,11 +1687,14 @@ public sealed class MainWindow : Window
 				_suppress = true;
 				try
 				{
-					ApplyParagraphDirection(after, effectiveDirection == "RTL", explicitDirection != "Auto");
-					if (explicitDirection != "Auto") EditorMetadata.SetExplicitDirection(after, explicitDirection);
+					ParagraphDirectionFormatter.Apply(
+						after,
+						inheritedFlowDirection,
+						inheritedTextAlignment,
+						explicitDirection != "Auto" ? explicitDirection : null);
 				}
 				finally { _suppress = false; }
-			}, DispatcherPriority.ContextIdle);
+			}, DispatcherPriority.Input);
 		}
 	}
 
