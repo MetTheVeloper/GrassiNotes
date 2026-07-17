@@ -178,8 +178,8 @@ public sealed class MainWindow : Window
 			UseAeroCaptionButtons = false
 		});
 		BuildUi();
-		base.AddHandler(Keyboard.PreviewKeyDownEvent, new KeyEventHandler(OnPreviewKeyDown), true);
-		base.AddHandler(Keyboard.PreviewKeyUpEvent, new KeyEventHandler(OnPreviewKeyUp), true);
+		base.AddHandler(Keyboard.PreviewKeyDownEvent, new System.Windows.Input.KeyEventHandler(OnPreviewKeyDown), true);
+		base.AddHandler(Keyboard.PreviewKeyUpEvent, new System.Windows.Input.KeyEventHandler(OnPreviewKeyUp), true);
 		base.Closing += OnClosing;
 		base.SourceInitialized += OnSourceInitialized;
 		base.Drop += OnDrop;
