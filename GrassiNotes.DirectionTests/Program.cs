@@ -1,0 +1,301 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Documents;
+using System.Windows.Threading;
+
+namespace GrassiNotes.DirectionTests;
+
+internal static class Program
+{
+	[STAThread]
+	private static int Main()
+	{
+		try
+		{
+			if (Application.Current == null)
+			{
+				_ = new Application
+				{
+					ShutdownMode = ShutdownMode.OnExplicitShutdown
+				};
+			}
+			ShortcutFormattingSetsBothProperties();
+			FlowDirectionForcesAlignmentAfterEveryChange();
+			ExplicitDirectionSurvivesParagraphReplacement();
+			MainWindowReappliesDirectionAfterRealTextChanged();
+			EnterFormattingInheritsBothProperties();
+			HeadingEnterCreatesNormalParagraph();
+			ListFormattingStaysAligned();
+			Console.WriteLine("RTL/LTR direction regression tests passed.");
+			return 0;
+		}
+		catch (Exception exception)
+		{
+			Console.Error.WriteLine(exception);
+			return 1;
+		}
+	}
+
+	private static void MainWindowReappliesDirectionAfterRealTextChanged()
+	{
+		MainWindow window = new MainWindow(
+			startHidden: true,
+			appFont: new System.Windows.Media.FontFamily("Segoe UI"));
+		window.InitializeForTesting();
+		RichTextBox editor = window.EditorForTesting;
+		Paragraph paragraph = editor.Document.Blocks.OfType<Paragraph>().First();
+		editor.CaretPosition = paragraph.ContentEnd;
+		window.SetSelectionDirectionForTesting(rtl: true);
+
+		AssertFormatting(paragraph, FlowDirection.RightToLeft, TextAlignment.Right, "RTL");
+
+		bool scheduledReset = false;
+		editor.TextChanged += delegate
+		{
+			if (scheduledReset) return;
+			scheduledReset = true;
+			editor.Dispatcher.BeginInvoke((Action)delegate
+			{
+				Paragraph? current = editor.CaretPosition.Paragraph;
+				if (current != null)
+					current.SetValue(Block.TextAlignmentProperty, TextAlignment.Left);
+			}, DispatcherPriority.Input);
+		};
+
+		editor.SelectAll();
+		editor.Selection.Text = "new character";
+		DrainDispatcher();
+
+		Paragraph result = editor.CaretPosition.Paragraph ??
+			throw new InvalidOperationException("The editor did not retain a paragraph after typing.");
+		AssertFormatting(result, FlowDirection.RightToLeft, TextAlignment.Right, "RTL");
+	}
+
+	private static void DrainDispatcher()
+	{
+		DispatcherFrame frame = new DispatcherFrame();
+		Dispatcher.CurrentDispatcher.BeginInvoke((Action)delegate
+		{
+			frame.Continue = false;
+		}, DispatcherPriority.ApplicationIdle);
+		Dispatcher.PushFrame(frame);
+	}
+
+	private static void ExplicitDirectionSurvivesParagraphReplacement()
+	{
+		Paragraph originalParagraph = new Paragraph(new Run("متن"));
+		ParagraphDirectionFormatter.Apply(
+			originalParagraph,
+			FlowDirection.RightToLeft,
+			TextAlignment.Right,
+			"RTL");
+		string explicitDirection = EditorMetadata.GetExplicitDirection(originalParagraph);
+
+		Paragraph replacementParagraph = new Paragraph(new Run("new text"))
+		{
+			FlowDirection = FlowDirection.LeftToRight,
+			TextAlignment = TextAlignment.Left
+		};
+		ParagraphDirectionFormatter.EnforceDirectionAndAlignment(
+			replacementParagraph,
+			explicitDirection);
+		AssertFormatting(replacementParagraph, FlowDirection.RightToLeft, TextAlignment.Right, "RTL");
+
+		replacementParagraph.TextAlignment = TextAlignment.Left;
+		replacementParagraph.Inlines.Add(new Run(" changed"));
+		ParagraphDirectionFormatter.EnforceDirectionAndAlignment(replacementParagraph);
+		AssertFormatting(replacementParagraph, FlowDirection.RightToLeft, TextAlignment.Right, "RTL");
+	}
+
+	private static void HeadingEnterCreatesNormalParagraph()
+	{
+		System.Windows.Media.FontFamily fontFamily = new System.Windows.Media.FontFamily("Segoe UI");
+		Paragraph heading = new Paragraph(new Run("Heading"))
+		{
+			Tag = "h2",
+			FontFamily = fontFamily,
+			FontSize = 22.0,
+			FontWeight = FontWeights.Bold
+		};
+		AssertEqual(true, ParagraphStyleFormatter.IsHeading(heading), "heading detection");
+
+		Paragraph newParagraph = new Paragraph
+		{
+			Tag = heading.Tag,
+			FontFamily = heading.FontFamily,
+			FontSize = heading.FontSize,
+			FontWeight = heading.FontWeight
+		};
+		ParagraphStyleFormatter.ApplyNormal(newParagraph, fontFamily);
+
+		AssertEqual(false, ParagraphStyleFormatter.IsHeading(newParagraph), "new paragraph heading reset");
+		AssertNull(newParagraph.Tag, "new paragraph tag");
+		AssertEqual(14.0, newParagraph.FontSize, "new paragraph font size");
+		AssertEqual(FontWeights.Normal, newParagraph.FontWeight, "new paragraph font weight");
+	}
+
+	private static void FlowDirectionForcesAlignmentAfterEveryChange()
+	{
+		Paragraph rtlParagraph = new Paragraph(new Run("متن"))
+		{
+			FlowDirection = FlowDirection.RightToLeft,
+			TextAlignment = TextAlignment.Left
+		};
+		ParagraphDirectionFormatter.EnforceAlignmentFromFlowDirection(rtlParagraph);
+		AssertEqual(TextAlignment.Right, rtlParagraph.TextAlignment, "forced RTL alignment");
+		AssertEqual(
+			TextAlignment.Right,
+			(TextAlignment)rtlParagraph.ReadLocalValue(Block.TextAlignmentProperty),
+			"local RTL alignment");
+
+		rtlParagraph.Inlines.Add(new Run(" جدید"));
+		rtlParagraph.TextAlignment = TextAlignment.Left;
+		ParagraphDirectionFormatter.EnforceAlignmentFromFlowDirection(rtlParagraph);
+		AssertEqual(TextAlignment.Right, rtlParagraph.TextAlignment, "forced RTL alignment after typing");
+
+		Paragraph ltrParagraph = new Paragraph(new Run("text"))
+		{
+			FlowDirection = FlowDirection.LeftToRight,
+			TextAlignment = TextAlignment.Right
+		};
+		ParagraphDirectionFormatter.EnforceAlignmentFromFlowDirection(ltrParagraph);
+		AssertEqual(TextAlignment.Left, ltrParagraph.TextAlignment, "forced LTR alignment");
+
+		Paragraph firstListParagraph = new Paragraph(new Run("یک"))
+		{
+			FlowDirection = FlowDirection.RightToLeft,
+			TextAlignment = TextAlignment.Left
+		};
+		Paragraph secondListParagraph = new Paragraph(new Run("دو"))
+		{
+			FlowDirection = FlowDirection.RightToLeft,
+			TextAlignment = TextAlignment.Left
+		};
+		List rtlList = new List
+		{
+			FlowDirection = FlowDirection.RightToLeft,
+			TextAlignment = TextAlignment.Left
+		};
+		rtlList.ListItems.Add(new ListItem(firstListParagraph));
+		rtlList.ListItems.Add(new ListItem(secondListParagraph));
+		FlowDocument listDocument = new FlowDocument(rtlList);
+
+		ParagraphDirectionFormatter.EnforceAlignmentFromFlowDirection(firstListParagraph);
+		AssertEqual(TextAlignment.Right, rtlList.TextAlignment, "forced RTL list alignment");
+		AssertEqual(TextAlignment.Right, firstListParagraph.TextAlignment, "forced first RTL list paragraph alignment");
+		AssertEqual(TextAlignment.Right, secondListParagraph.TextAlignment, "forced second RTL list paragraph alignment");
+		GC.KeepAlive(listDocument);
+	}
+
+	private static void ShortcutFormattingSetsBothProperties()
+	{
+		Paragraph paragraph = new Paragraph(new Run("متن"));
+
+		ParagraphDirectionFormatter.Apply(
+			paragraph,
+			FlowDirection.RightToLeft,
+			TextAlignment.Right,
+			"RTL");
+		AssertFormatting(paragraph, FlowDirection.RightToLeft, TextAlignment.Right, "RTL");
+
+		ParagraphDirectionFormatter.Apply(
+			paragraph,
+			FlowDirection.LeftToRight,
+			TextAlignment.Left,
+			"LTR");
+		AssertFormatting(paragraph, FlowDirection.LeftToRight, TextAlignment.Left, "LTR");
+	}
+
+	private static void EnterFormattingInheritsBothProperties()
+	{
+		Paragraph source = new Paragraph(new Run("متن"));
+		ParagraphDirectionFormatter.Apply(
+			source,
+			FlowDirection.RightToLeft,
+			TextAlignment.Right,
+			"RTL");
+
+		Paragraph newParagraph = new Paragraph();
+		ParagraphDirectionFormatter.Apply(
+			newParagraph,
+			source.FlowDirection,
+			source.TextAlignment,
+			EditorMetadata.GetExplicitDirection(source));
+
+		AssertFormatting(newParagraph, FlowDirection.RightToLeft, TextAlignment.Right, "RTL");
+	}
+
+	private static void ListFormattingStaysAligned()
+	{
+		Paragraph first = new Paragraph(new Run("یک"));
+		Paragraph second = new Paragraph(new Run("دو"));
+		List list = new List();
+		list.ListItems.Add(new ListItem(first));
+		list.ListItems.Add(new ListItem(second));
+		FlowDocument document = new FlowDocument(list);
+
+		ParagraphDirectionFormatter.Apply(
+			first,
+			FlowDirection.RightToLeft,
+			TextAlignment.Right,
+			"RTL");
+		AssertListFormatting(list, new[] { first, second }, FlowDirection.RightToLeft, TextAlignment.Right, "RTL");
+
+		first.Inlines.Add(new Run(" سه"));
+		ParagraphDirectionFormatter.Apply(
+			first,
+			FlowDirection.RightToLeft,
+			TextAlignment.Right,
+			"RTL");
+		AssertListFormatting(list, new[] { first, second }, FlowDirection.RightToLeft, TextAlignment.Right, "RTL");
+
+		ParagraphDirectionFormatter.Apply(
+			second,
+			FlowDirection.LeftToRight,
+			TextAlignment.Left,
+			"LTR");
+		AssertListFormatting(list, new[] { first, second }, FlowDirection.LeftToRight, TextAlignment.Left, "LTR");
+
+		GC.KeepAlive(document);
+	}
+
+	private static void AssertListFormatting(
+		List list,
+		IEnumerable<Paragraph> paragraphs,
+		FlowDirection expectedFlowDirection,
+		TextAlignment expectedTextAlignment,
+		string expectedExplicitDirection)
+	{
+		AssertEqual(expectedFlowDirection, list.FlowDirection, "list FlowDirection");
+		AssertEqual(expectedTextAlignment, list.TextAlignment, "list TextAlignment");
+		foreach (Paragraph paragraph in paragraphs)
+			AssertFormatting(paragraph, expectedFlowDirection, expectedTextAlignment, expectedExplicitDirection);
+	}
+
+	private static void AssertFormatting(
+		Paragraph paragraph,
+		FlowDirection expectedFlowDirection,
+		TextAlignment expectedTextAlignment,
+		string expectedExplicitDirection)
+	{
+		AssertEqual(expectedFlowDirection, paragraph.FlowDirection, "paragraph FlowDirection");
+		AssertEqual(expectedTextAlignment, paragraph.TextAlignment, "paragraph TextAlignment");
+		AssertEqual(expectedExplicitDirection, EditorMetadata.GetExplicitDirection(paragraph), "explicit direction");
+	}
+
+	private static void AssertEqual<T>(T expected, T actual, string name)
+		where T : notnull
+	{
+		if (!EqualityComparer<T>.Default.Equals(expected, actual))
+			throw new InvalidOperationException($"{name}: expected {expected}, got {actual}.");
+	}
+
+	private static void AssertNull(object? actual, string name)
+	{
+		if (actual != null)
+			throw new InvalidOperationException($"{name}: expected null, got {actual}.");
+	}
+}
