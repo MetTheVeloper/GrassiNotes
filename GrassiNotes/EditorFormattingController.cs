@@ -58,14 +58,30 @@ internal sealed class EditorFormattingController
 			return true;
 		}
 
-		if ((modifiers & ModifierKeys.Shift) == 0 &&
-			(key == Key.R || key == Key.L))
+		return false;
+	}
+
+	public void ApplyVisualAlignment(TextAlignment alignment)
+	{
+		List<Paragraph> paragraphs = SelectedParagraphs().Distinct().ToList();
+		if (paragraphs.Count == 0 && _editor.CaretPosition.Paragraph is Paragraph current)
+			paragraphs.Add(current);
+
+		foreach (Paragraph paragraph in paragraphs)
 		{
-			ApplyDirection(DirectionAtCaret());
-			return true;
+			TextAlignment logicalAlignment =
+				LogicalAlignmentForVisual(paragraph.FlowDirection, alignment);
+			paragraph.SetValue(Block.TextAlignmentProperty, logicalAlignment);
+
+			System.Windows.Documents.List? list = FindOwningList(paragraph);
+			if (list != null)
+			{
+				list.SetValue(Block.TextAlignmentProperty, logicalAlignment);
+				NormalizeListGeometry(list);
+			}
 		}
 
-		return false;
+		_editor.Focus();
 	}
 
 	public void ExecuteInlineCommand(RoutedUICommand command)
@@ -176,7 +192,7 @@ internal sealed class EditorFormattingController
 
 		list.SetValue(FrameworkElement.FlowDirectionProperty, flowDirection);
 		list.SetValue(Block.TextAlignmentProperty, textAlignment);
-		list.MarkerOffset = 18.0;
+		NormalizeListGeometry(list);
 
 		foreach (ListItem item in list.ListItems)
 		{
@@ -254,6 +270,31 @@ internal sealed class EditorFormattingController
 
 	private static TextAlignment AlignmentFor(ParagraphDirection direction) =>
 		direction == ParagraphDirection.RightToLeft
-			? TextAlignment.Right
+			// WPF mirrors Left/Right alignment inside an RTL flow. "Left" is
+			// therefore the logical value that places content on the visual
+			// right edge; the inverse is true for a visual left alignment.
+			? TextAlignment.Left
 			: TextAlignment.Left;
+
+	private static TextAlignment LogicalAlignmentForVisual(
+		FlowDirection flowDirection,
+		TextAlignment visualAlignment)
+	{
+		if (flowDirection != FlowDirection.RightToLeft)
+			return visualAlignment;
+
+		return visualAlignment switch
+		{
+			TextAlignment.Left => TextAlignment.Right,
+			TextAlignment.Right => TextAlignment.Left,
+			_ => visualAlignment
+		};
+	}
+
+	private static void NormalizeListGeometry(System.Windows.Documents.List list)
+	{
+		list.Margin = new Thickness(0.0);
+		list.Padding = new Thickness(0.0);
+		list.MarkerOffset = 22.0;
+	}
 }

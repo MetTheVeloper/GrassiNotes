@@ -174,6 +174,7 @@ public sealed class MainWindow : Window
 			UseAeroCaptionButtons = false
 		});
 		BuildUi();
+		base.SizeChanged += delegate { UpdateWindowCorners(); };
 		base.PreviewKeyDown += OnPreviewKeyDown;
 		base.PreviewKeyUp += OnPreviewKeyUp;
 		base.Closing += OnClosing;
@@ -182,6 +183,7 @@ public sealed class MainWindow : Window
 		base.StateChanged += delegate
 		{
 			UpdateMaximizeGlyph();
+			UpdateWindowCorners();
 		};
 		_autosave.Tick += delegate
 		{
@@ -217,9 +219,10 @@ public sealed class MainWindow : Window
 						FilePath = current.FilePath,
 						IsDirty = current.IsDirty,
 						Kind = current.Kind,
-						Zoom = current.Zoom,
+						Zoom = DocumentMetadata.NormalizeZoom(current.Zoom),
 						Document = DocumentSerializer.FromXaml(current.Xaml)
 					};
+					DocumentMetadata.SetZoom(documentTab.Document, documentTab.Zoom);
 					ConfigureDocument(documentTab.Document);
 					AddDocument(documentTab, select: false);
 				}
@@ -941,7 +944,7 @@ public sealed class MainWindow : Window
 			_active = d;
 			d.IsActive = true;
 			_editor.Document = d.Document;
-			_editor.FontSize = 15.0 * d.Zoom;
+			EditorZoom.Apply(_editor, d.Zoom);
 			_suppress = false;
 			UpdateTitle();
 			RebuildTabs();
@@ -1068,10 +1071,12 @@ public sealed class MainWindow : Window
 			}
 			DocumentKind kind = FileDialogs.KindFromPath(full);
 			FlowDocument flowDocument;
+			double zoom = 1.0;
 			switch (kind)
 			{
 			case DocumentKind.Native:
 				flowDocument = DocumentSerializer.FromXaml(await File.ReadAllTextAsync(full));
+				zoom = DocumentMetadata.GetZoom(flowDocument);
 				break;
 			case DocumentKind.Markdown:
 				flowDocument = MarkdownCodec.Parse(await File.ReadAllTextAsync(full), _appFont);
@@ -1096,6 +1101,7 @@ public sealed class MainWindow : Window
 				FilePath = full,
 				Kind = kind,
 				Document = flowDocument,
+				Zoom = zoom,
 				IsDirty = false
 			};
 			AddDocument(d, select: true);
@@ -1136,6 +1142,7 @@ public sealed class MainWindow : Window
 			switch (kind)
 			{
 			case DocumentKind.Native:
+				DocumentMetadata.SetZoom(d.Document, d.Zoom);
 				await File.WriteAllTextAsync(path, DocumentSerializer.ToXaml(d.Document), (Encoding)new UTF8Encoding(false));
 				break;
 			case DocumentKind.Markdown:
@@ -1227,6 +1234,9 @@ public sealed class MainWindow : Window
 
 	private void SaveSession()
 	{
+		foreach (DocumentTab document in _documents)
+			DocumentMetadata.SetZoom(document.Document, document.Zoom);
+
 		SessionService.Save(new SessionState
 		{
 			Theme = _themeName,
@@ -1338,11 +1348,32 @@ public sealed class MainWindow : Window
 	{
 		if (_active != null)
 		{
-			_active.Zoom = Math.Clamp(_active.Zoom + delta, 0.6, 2.2);
-			_editor.FontSize = 15.0 * _active.Zoom;
-			UpdateStatus();
-			QueueAutosave();
+			SetZoom(_active.Zoom + delta);
 		}
+	}
+
+	private void SetZoom(double value)
+	{
+		if (_active == null) return;
+
+		double zoom = DocumentMetadata.NormalizeZoom(
+			Math.Clamp(value, 0.6, 2.2));
+		if (Math.Abs(_active.Zoom - zoom) < 0.001)
+			return;
+
+		_active.Zoom = zoom;
+		DocumentMetadata.SetZoom(_active.Document, zoom);
+		EditorZoom.Apply(_editor, zoom);
+
+		if (_active.Kind == DocumentKind.Native)
+		{
+			_active.IsDirty = true;
+			_saveStatus.Text = "Unsaved";
+		}
+
+		UpdateTitle();
+		UpdateStatus();
+		QueueAutosave();
 	}
 
 	private void CopyMarkdown()
@@ -1406,6 +1437,18 @@ public sealed class MainWindow : Window
 			else if (e.Key == Key.U)
 			{
 				Execute(EditingCommands.ToggleUnderline);
+				e.Handled = true;
+			}
+			else if (!flag2 && e.Key == Key.R)
+			{
+				_formatting.ApplyVisualAlignment(TextAlignment.Right);
+				QueueAutosave();
+				e.Handled = true;
+			}
+			else if (!flag2 && e.Key == Key.L)
+			{
+				_formatting.ApplyVisualAlignment(TextAlignment.Left);
+				QueueAutosave();
 				e.Handled = true;
 			}
 			else if (flag2 && e.Key == Key.L)
@@ -1473,12 +1516,7 @@ public sealed class MainWindow : Window
 			}
 			else if (e.Key == Key.D0 || e.Key == Key.NumPad0)
 			{
-				if (_active != null)
-				{
-					_active.Zoom = 1.0;
-					_editor.FontSize = 15.0;
-					UpdateStatus();
-				}
+				SetZoom(1.0);
 				e.Handled = true;
 			}
 		}
@@ -1906,6 +1944,23 @@ public sealed class MainWindow : Window
 		{
 			_maximizeButton.Content = Glyph((base.WindowState == WindowState.Maximized) ? "\ue923" : "\ue922", 13.0);
 		}
+	}
+
+	private void UpdateWindowCorners()
+	{
+		if (_outer == null || _outer.ActualWidth <= 0.0 || _outer.ActualHeight <= 0.0)
+			return;
+
+		double radius = base.WindowState == WindowState.Maximized ? 0.0 : 9.0;
+		_outer.CornerRadius = new CornerRadius(radius);
+		_outer.Clip = new RectangleGeometry(
+			new Rect(0.0, 0.0, _outer.ActualWidth, _outer.ActualHeight),
+			radius,
+			radius);
+
+		WindowChrome? chrome = WindowChrome.GetWindowChrome(this);
+		if (chrome != null)
+			chrome.CornerRadius = new CornerRadius(radius);
 	}
 
 	[DllImport("user32.dll", SetLastError = true)]
