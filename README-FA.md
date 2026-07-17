@@ -1,4 +1,4 @@
-# GrassiNotes 2.1.4
+# GrassiNotes 2.1.5
 
 این نسخه یک Hotfix برای پایداری جهت و تراز پاراگراف و List هنگام تایپ و Enter است.
 
