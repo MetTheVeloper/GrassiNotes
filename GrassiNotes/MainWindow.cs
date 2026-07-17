@@ -94,6 +94,8 @@ public sealed class MainWindow : Window
 
 	private TextBlock _titleText;
 
+	private System.Windows.Shapes.Path _headerLogo;
+
 	private TextBlock _saveStatus;
 
 	private TextBlock _positionStatus;
@@ -140,6 +142,9 @@ public sealed class MainWindow : Window
 
 	private List<TextRange> _findMatches = new List<TextRange>();
 
+	private readonly DirectionShortcutGesture _directionShortcut =
+		new DirectionShortcutGesture();
+
 	public MainWindow(bool startHidden, System.Windows.Media.FontFamily appFont)
 	{
 		_startHidden = startHidden;
@@ -175,6 +180,7 @@ public sealed class MainWindow : Window
 		});
 		BuildUi();
 		base.SizeChanged += delegate { UpdateWindowCorners(); };
+		base.Deactivated += delegate { _directionShortcut.Reset(); };
 		base.PreviewKeyDown += OnPreviewKeyDown;
 		base.PreviewKeyUp += OnPreviewKeyUp;
 		base.Closing += OnClosing;
@@ -282,12 +288,10 @@ public sealed class MainWindow : Window
 		titleGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.0, GridUnitType.Star) });
 		titleGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 		_title.Child = titleGrid;
-		System.Windows.Controls.Image logo = LoadLogo();
-		logo.Width = 20.0;
-		logo.Height = 20.0;
-		logo.Margin = new Thickness(0.0, 0.0, 9.0, 0.0);
-		logo.VerticalAlignment = VerticalAlignment.Center;
-		titleGrid.Children.Add(logo);
+		_headerLogo = HeaderLogo.Create();
+		_headerLogo.Margin = new Thickness(0.0, 0.0, 9.0, 0.0);
+		_headerLogo.VerticalAlignment = VerticalAlignment.Center;
+		titleGrid.Children.Add(_headerLogo);
 		_titleText = new TextBlock
 		{
 			Text = "GrassiNotes",
@@ -455,22 +459,6 @@ public sealed class MainWindow : Window
 			VerticalAlignment = VerticalAlignment.Center,
 			HorizontalAlignment = align
 		};
-	}
-
-	private System.Windows.Controls.Image LoadLogo()
-	{
-		try
-		{
-			using MemoryStream streamSource = new MemoryStream(EmbeddedAssets.AppPng);
-			BitmapImage bitmapImage = new BitmapImage();
-			bitmapImage.BeginInit();
-			bitmapImage.StreamSource = streamSource;
-			bitmapImage.CacheOption = BitmapCacheOption.OnLoad;
-			bitmapImage.EndInit();
-			bitmapImage.Freeze();
-			return new System.Windows.Controls.Image { Source = bitmapImage };
-		}
-		catch { return new System.Windows.Controls.Image(); }
 	}
 
 	private System.Windows.Controls.Button ChromeButton(string glyph, RoutedEventHandler click, string tip, string? name = null)
@@ -677,6 +665,7 @@ public sealed class MainWindow : Window
 
 	private void BuildColorPopup()
 	{
+		StackPanel panel = new StackPanel();
 		UniformGrid uniformGrid = new UniformGrid
 		{
 			Columns = 5,
@@ -715,6 +704,19 @@ public sealed class MainWindow : Window
 			};
 			uniformGrid.Children.Add(button);
 		}
+		panel.Children.Add(uniformGrid);
+		panel.Children.Add(PopupSeparator());
+		System.Windows.Controls.Button automatic = PopupMenuButton(
+			"A",
+			"Automatic",
+			"Theme color",
+			delegate
+			{
+				_formatting.ApplyAutomaticTextColor(_theme.Text);
+				_colorPopup.IsOpen = false;
+			});
+		automatic.Tag = "AutomaticColor";
+		panel.Children.Add(automatic);
 		_colorPopup = new Popup
 		{
 			PlacementTarget = _colorButton,
@@ -723,7 +725,7 @@ public sealed class MainWindow : Window
 			AllowsTransparency = true,
 			Child = new Border
 			{
-				Child = uniformGrid,
+				Child = panel,
 				CornerRadius = new CornerRadius(7.0),
 				BorderThickness = new Thickness(1.0),
 				Width = 178.0
@@ -963,6 +965,7 @@ public sealed class MainWindow : Window
 		doc.FontSize = 14.0;
 		doc.PagePadding = new Thickness(0.0);
 		doc.Foreground = _theme.Text;
+		EditorFormattingController.RefreshAutomaticTextColors(doc, _theme.Text);
 		NormalizeDocumentFont(doc);
 		_formatting.NormalizeDocument(doc);
 	}
@@ -1257,7 +1260,7 @@ public sealed class MainWindow : Window
 
 	private void UpdateTitle()
 	{
-		_titleText.Text = ((_active == null) ? "GrassiNotes" : (_active.Title + " — GrassiNotes"));
+		_titleText.Text = AppVersion.WindowTitle(_active?.Title);
 		base.Title = _titleText.Text;
 	}
 
@@ -1401,14 +1404,14 @@ public sealed class MainWindow : Window
 
 	private void OnPreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
 	{
-		bool flag = (Keyboard.Modifiers & ModifierKeys.Control) != 0;
-		bool flag2 = (Keyboard.Modifiers & ModifierKeys.Shift) != 0;
-		if (_formatting.TryApplyDirectionShortcut(e.Key, Keyboard.Modifiers))
+		if (_directionShortcut.OnKeyDown(e.Key, Keyboard.Modifiers, e.IsRepeat))
 		{
-			QueueAutosave();
 			e.Handled = true;
 			return;
 		}
+
+		bool flag = (Keyboard.Modifiers & ModifierKeys.Control) != 0;
+		bool flag2 = (Keyboard.Modifiers & ModifierKeys.Shift) != 0;
 		if (e.Key == Key.Escape)
 		{
 			if (_findPopup.IsOpen)
@@ -1524,9 +1527,17 @@ public sealed class MainWindow : Window
 
 	private void OnPreviewKeyUp(object sender, System.Windows.Input.KeyEventArgs e)
 	{
-		bool controlDown = (Keyboard.Modifiers & ModifierKeys.Control) != 0;
-		if (controlDown && (e.Key == Key.RightShift || e.Key == Key.LeftShift))
-			e.Handled = true;
+		DirectionShortcutKeyUpResult result =
+			_directionShortcut.OnKeyUp(e.Key, Keyboard.Modifiers);
+		if (!result.Handled) return;
+
+		if (result.Direction is ParagraphDirection direction)
+		{
+			_formatting.ApplyDirection(direction);
+			QueueAutosave();
+		}
+
+		e.Handled = true;
 	}
 
 	private void EditorPreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
@@ -1650,6 +1661,7 @@ public sealed class MainWindow : Window
 		_editor.Foreground = _theme.Text;
 		_editor.CaretBrush = _theme.Caret;
 		_editor.SelectionBrush = _theme.Selection;
+		_headerLogo.Fill = HeaderLogo.BrushFor(name);
 		_titleText.Foreground = _theme.Text;
 		foreach (TextBlock status in new[] { _saveStatus, _positionStatus, _wordsStatus, _formatStatus, _zoomStatus, _findCount })
 			status.Foreground = _theme.Muted;
@@ -1706,6 +1718,9 @@ public sealed class MainWindow : Window
 		foreach (DocumentTab document in _documents)
 		{
 			document.Document.Foreground = _theme.Text;
+			EditorFormattingController.RefreshAutomaticTextColors(
+				document.Document,
+				_theme.Text);
 			NormalizeDocumentFont(document.Document);
 		}
 		ApplyScrollBarStyle(_editor);

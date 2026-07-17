@@ -38,29 +38,6 @@ internal sealed class EditorFormattingController
 		_editor.Focus();
 	}
 
-	public bool TryApplyDirectionShortcut(Key key, ModifierKeys modifiers)
-	{
-		if ((modifiers & ModifierKeys.Control) == 0 ||
-			(modifiers & ModifierKeys.Alt) != 0)
-		{
-			return false;
-		}
-
-		if (key == Key.RightShift)
-		{
-			ApplyDirection(ParagraphDirection.RightToLeft);
-			return true;
-		}
-
-		if (key == Key.LeftShift)
-		{
-			ApplyDirection(ParagraphDirection.LeftToRight);
-			return true;
-		}
-
-		return false;
-	}
-
 	public void ApplyVisualAlignment(TextAlignment alignment)
 	{
 		List<Paragraph> paragraphs = SelectedParagraphs().Distinct().ToList();
@@ -93,6 +70,14 @@ internal sealed class EditorFormattingController
 	public void ApplyTextColor(Brush brush)
 	{
 		_editor.Selection.ApplyPropertyValue(TextElement.ForegroundProperty, brush);
+		_editor.Focus();
+	}
+
+	public void ApplyAutomaticTextColor(Brush themeTextBrush)
+	{
+		_editor.Selection.ApplyPropertyValue(
+			TextElement.ForegroundProperty,
+			themeTextBrush);
 		_editor.Focus();
 	}
 
@@ -164,6 +149,21 @@ internal sealed class EditorFormattingController
 		Paragraph? paragraph = _editor.CaretPosition.Paragraph;
 		if (paragraph != null)
 			ApplyDirectionToParagraph(paragraph, DirectionOf(paragraph));
+	}
+
+	public static void RefreshAutomaticTextColors(
+		FlowDocument document,
+		Brush themeTextBrush)
+	{
+		foreach (Paragraph paragraph in EnumerateParagraphs(document.Blocks))
+		{
+			foreach (TextElement element in EnumerateInlineElements(paragraph.Inlines))
+			{
+				object local = element.ReadLocalValue(TextElement.ForegroundProperty);
+				if (local is SolidColorBrush brush && IsAutomaticThemeColor(brush.Color))
+					element.SetValue(TextElement.ForegroundProperty, themeTextBrush);
+			}
+		}
 	}
 
 	internal ParagraphDirection DirectionAtCaret()
@@ -263,6 +263,20 @@ internal sealed class EditorFormattingController
 		return null;
 	}
 
+	private static IEnumerable<TextElement> EnumerateInlineElements(
+		InlineCollection inlines)
+	{
+		foreach (Inline inline in inlines)
+		{
+			yield return inline;
+			if (inline is Span span)
+			{
+				foreach (TextElement child in EnumerateInlineElements(span.Inlines))
+					yield return child;
+			}
+		}
+	}
+
 	private static FlowDirection FlowFor(ParagraphDirection direction) =>
 		direction == ParagraphDirection.RightToLeft
 			? FlowDirection.RightToLeft
@@ -293,8 +307,15 @@ internal sealed class EditorFormattingController
 
 	private static void NormalizeListGeometry(System.Windows.Documents.List list)
 	{
-		list.Margin = new Thickness(0.0);
+		const double gutter = 30.0;
+		list.Margin = list.FlowDirection == FlowDirection.RightToLeft
+			? new Thickness(0.0, 0.0, gutter, 0.0)
+			: new Thickness(gutter, 0.0, 0.0, 0.0);
 		list.Padding = new Thickness(0.0);
-		list.MarkerOffset = 22.0;
+		list.MarkerOffset = 18.0;
 	}
+
+	private static bool IsAutomaticThemeColor(System.Windows.Media.Color color) =>
+		color == ((SolidColorBrush)ThemePalette.Dark.Text).Color ||
+		color == ((SolidColorBrush)ThemePalette.Light.Text).Color;
 }

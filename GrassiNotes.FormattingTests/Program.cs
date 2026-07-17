@@ -6,6 +6,7 @@ using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 
 namespace GrassiNotes.FormattingTests;
@@ -49,13 +50,22 @@ internal static class Program
 				new EditorFormattingController(editor, AppFont);
 
 			DirectionShortcutsAnchorTextVisually(editor, formatting, host);
+			DirectionShortcutWaitsForCleanKeyUp(editor, formatting);
 			AlignmentCommandsPreserveFlow(editor, formatting, host);
 			TypingAndEnterKeepVisualAlignment(editor, formatting, host);
 			HeadingEnterCreatesNormalParagraph(editor, formatting);
 			ListItemsStayOnTheIntendedSide(editor, formatting, host);
 			BulletsAndNumbersUseTheSameTextIndent(editor, formatting, host);
+			ListMarkersRenderInsideTheViewport(editor, formatting);
+			AutomaticTextColorTracksTheme(editor, formatting);
 			ZoomChangesRenderedMetricsWithoutChangingFontSizes(editor, host);
 			NativeDocumentZoomRoundTrips();
+			AssertEqual("2.2.2", AppVersion.Current, "displayed application version");
+			AssertEqual(
+				"Untitled 1 \u2014 GrassiNotes v. 2.2.2",
+				AppVersion.WindowTitle("Untitled 1"),
+				"versioned document window title");
+			HeaderLogoUsesThemeSvgVariants();
 
 			Console.WriteLine("Formatting and visual-layout behavior tests passed.");
 			return 0;
@@ -79,11 +89,10 @@ internal static class Program
 	{
 		Paragraph paragraph = Reset(editor, "سلام دنیا");
 
-		AssertTrue(
-			formatting.TryApplyDirectionShortcut(
-				Key.RightShift,
-				ModifierKeys.Control | ModifierKeys.Shift),
-			"Ctrl+Right Shift handled");
+		CompleteDirectionGesture(
+			formatting,
+			Key.RightShift,
+			ParagraphDirection.RightToLeft);
 		DrainDispatcher();
 		AssertFormatting(
 			paragraph,
@@ -92,11 +101,10 @@ internal static class Program
 			"Ctrl+Right Shift logical properties");
 		AssertAnchoredRight(paragraph, editor, host, "Ctrl+Right Shift visual position");
 
-		AssertTrue(
-			formatting.TryApplyDirectionShortcut(
-				Key.LeftShift,
-				ModifierKeys.Control | ModifierKeys.Shift),
-			"Ctrl+Left Shift handled");
+		CompleteDirectionGesture(
+			formatting,
+			Key.LeftShift,
+			ParagraphDirection.LeftToRight);
 		DrainDispatcher();
 		AssertFormatting(
 			paragraph,
@@ -104,6 +112,72 @@ internal static class Program
 			TextAlignment.Left,
 			"Ctrl+Left Shift logical properties");
 		AssertAnchoredLeft(paragraph, editor, host, "Ctrl+Left Shift visual position");
+	}
+
+	private static void DirectionShortcutWaitsForCleanKeyUp(
+		RichTextBox editor,
+		EditorFormattingController formatting)
+	{
+		Paragraph paragraph = Reset(editor, "direction");
+		DirectionShortcutGesture gesture = new DirectionShortcutGesture();
+
+		AssertTrue(
+			gesture.OnKeyDown(
+				Key.RightShift,
+				ModifierKeys.Control | ModifierKeys.Shift),
+			"direction chord key-down is suppressed");
+		AssertEqual(
+			FlowDirection.LeftToRight,
+			paragraph.FlowDirection,
+			"direction does not change on key-down");
+
+		DirectionShortcutKeyUpResult completed =
+			gesture.OnKeyUp(Key.RightShift, ModifierKeys.Control);
+		AssertEqual<ParagraphDirection?>(
+			ParagraphDirection.RightToLeft,
+			completed.Direction,
+			"clean key-up resolves RTL");
+		formatting.ApplyDirection(completed.Direction!.Value);
+		AssertEqual(
+			FlowDirection.RightToLeft,
+			paragraph.FlowDirection,
+			"clean key-up applies RTL");
+
+		formatting.ApplyDirection(ParagraphDirection.LeftToRight);
+		AssertTrue(
+			gesture.OnKeyDown(
+				Key.RightShift,
+				ModifierKeys.Control | ModifierKeys.Shift),
+			"selection chord starts armed");
+		AssertTrue(
+			!gesture.OnKeyDown(
+				Key.Right,
+				ModifierKeys.Control | ModifierKeys.Shift),
+			"arrow remains available to native selection");
+		DirectionShortcutKeyUpResult cancelled =
+			gesture.OnKeyUp(Key.RightShift, ModifierKeys.Control);
+		AssertTrue(cancelled.Handled, "cancelled shift key-up remains suppressed");
+		AssertEqual<ParagraphDirection?>(
+			null,
+			cancelled.Direction,
+			"Ctrl+Shift+Arrow cancels direction change");
+		AssertEqual(
+			FlowDirection.LeftToRight,
+			paragraph.FlowDirection,
+			"word selection preserves direction");
+
+		AssertTrue(
+			gesture.OnKeyDown(
+				Key.LeftShift,
+				ModifierKeys.Control | ModifierKeys.Shift),
+			"LTR chord starts armed");
+		gesture.OnKeyUp(Key.LeftCtrl, ModifierKeys.Shift);
+		DirectionShortcutKeyUpResult wrongReleaseOrder =
+			gesture.OnKeyUp(Key.LeftShift, ModifierKeys.None);
+		AssertEqual<ParagraphDirection?>(
+			null,
+			wrongReleaseOrder.Direction,
+			"releasing Control first cancels the chord");
 	}
 
 	private static void AlignmentCommandsPreserveFlow(
@@ -114,9 +188,6 @@ internal static class Program
 		Paragraph paragraph = Reset(editor, "سلام دنیا");
 		formatting.ApplyDirection(ParagraphDirection.RightToLeft);
 
-		AssertTrue(
-			!formatting.TryApplyDirectionShortcut(Key.R, ModifierKeys.Control),
-			"Ctrl+R is not interpreted as a direction shortcut");
 		formatting.ApplyVisualAlignment(TextAlignment.Right);
 		DrainDispatcher();
 
@@ -243,6 +314,22 @@ internal static class Program
 			numberStart,
 			1.0,
 			"bullet and numbering text indent");
+
+		double bulletRight = ListTextRightDistance(
+			editor,
+			formatting,
+			host,
+			TextMarkerStyle.Disc);
+		double numberRight = ListTextRightDistance(
+			editor,
+			formatting,
+			host,
+			TextMarkerStyle.Decimal);
+		AssertNear(
+			bulletRight,
+			numberRight,
+			1.0,
+			"RTL bullet and numbering text indent");
 	}
 
 	private static double ListTextStart(
@@ -255,6 +342,120 @@ internal static class Program
 		formatting.ApplyDirection(ParagraphDirection.LeftToRight);
 		DrainDispatcher();
 		return PhysicalBounds(paragraph, editor, host).Left;
+	}
+
+	private static double ListTextRightDistance(
+		RichTextBox editor,
+		EditorFormattingController formatting,
+		Window host,
+		TextMarkerStyle markerStyle)
+	{
+		Paragraph paragraph = ResetAsList(editor, markerStyle, "مورد");
+		formatting.ApplyDirection(ParagraphDirection.RightToLeft);
+		DrainDispatcher();
+		Rect bounds = PhysicalBounds(paragraph, editor, host);
+		double editorRight = editor.TransformToAncestor(host)
+			.Transform(new Point(editor.ActualWidth, 0.0)).X;
+		return editorRight - bounds.Right;
+	}
+
+	private static void ListMarkersRenderInsideTheViewport(
+		RichTextBox editor,
+		EditorFormattingController formatting)
+	{
+		foreach (ParagraphDirection direction in new[]
+			{
+				ParagraphDirection.LeftToRight,
+				ParagraphDirection.RightToLeft
+			})
+		{
+			foreach (TextMarkerStyle markerStyle in new[]
+				{
+					TextMarkerStyle.Disc,
+					TextMarkerStyle.Decimal
+				})
+			{
+				Paragraph paragraph = ResetAsList(
+					editor,
+					markerStyle,
+					direction == ParagraphDirection.RightToLeft
+						? "مورد"
+						: "Item");
+				editor.Background = Brushes.White;
+				editor.Foreground = Brushes.Black;
+				editor.Document.Foreground = Brushes.Black;
+				formatting.ApplyDirection(direction);
+				DrainDispatcher();
+
+				AssertMarkerPixels(
+					editor,
+					paragraph,
+					direction,
+					$"{direction} {markerStyle} marker");
+			}
+		}
+	}
+
+	private static void AutomaticTextColorTracksTheme(
+		RichTextBox editor,
+		EditorFormattingController formatting)
+	{
+		Paragraph paragraph = Reset(editor, "automatic");
+		editor.Selection.Select(paragraph.ContentStart, paragraph.ContentEnd);
+		formatting.ApplyAutomaticTextColor(ThemePalette.Dark.Text);
+		AssertBrushColor(
+			ThemePalette.Dark.Text,
+			editor.Selection.GetPropertyValue(TextElement.ForegroundProperty),
+			"automatic dark color");
+
+		EditorFormattingController.RefreshAutomaticTextColors(
+			editor.Document,
+			ThemePalette.Light.Text);
+		AssertBrushColor(
+			ThemePalette.Light.Text,
+			editor.Selection.GetPropertyValue(TextElement.ForegroundProperty),
+			"automatic color follows light theme");
+
+		string xaml = DocumentSerializer.ToXaml(editor.Document);
+		FlowDocument restored = DocumentSerializer.FromXaml(xaml);
+		EditorFormattingController.RefreshAutomaticTextColors(
+			restored,
+			ThemePalette.Dark.Text);
+		TextRange restoredText = new TextRange(
+			restored.ContentStart,
+			restored.ContentEnd);
+		AssertBrushColor(
+			ThemePalette.Dark.Text,
+			restoredText.GetPropertyValue(TextElement.ForegroundProperty),
+			"automatic color survives save and reload");
+
+		paragraph = Reset(editor, "manual");
+		editor.Selection.Select(paragraph.ContentStart, paragraph.ContentEnd);
+		SolidColorBrush manual = new SolidColorBrush(Colors.Red);
+		formatting.ApplyTextColor(manual);
+		EditorFormattingController.RefreshAutomaticTextColors(
+			editor.Document,
+			ThemePalette.Light.Text);
+		AssertBrushColor(
+			manual,
+			editor.Selection.GetPropertyValue(TextElement.ForegroundProperty),
+			"manual color remains fixed");
+	}
+
+	private static void HeaderLogoUsesThemeSvgVariants()
+	{
+		System.Windows.Shapes.Path logo = HeaderLogo.Create();
+		AssertTrue(!logo.Data.Bounds.IsEmpty, "header SVG geometry is renderable");
+		AssertBrushColor(
+			new SolidColorBrush(
+				System.Windows.Media.Color.FromRgb(250, 250, 250)),
+			HeaderLogo.BrushFor("Dark"),
+			"dark SVG fill");
+		AssertBrushColor(
+			new SolidColorBrush(
+				System.Windows.Media.Color.FromRgb(255, 0, 0)),
+			HeaderLogo.BrushFor("Light"),
+			"light SVG fill");
 	}
 
 	private static void ZoomChangesRenderedMetricsWithoutChangingFontSizes(
@@ -291,6 +492,123 @@ internal static class Program
 		FlowDocument restored = DocumentSerializer.FromXaml(xaml);
 
 		AssertNear(2.0, DocumentMetadata.GetZoom(restored), 0.001, "native zoom persistence");
+	}
+
+	private static void CompleteDirectionGesture(
+		EditorFormattingController formatting,
+		Key shiftKey,
+		ParagraphDirection expectedDirection)
+	{
+		DirectionShortcutGesture gesture = new DirectionShortcutGesture();
+		AssertTrue(
+			gesture.OnKeyDown(
+				shiftKey,
+				ModifierKeys.Control | ModifierKeys.Shift),
+			$"Ctrl+{shiftKey} key-down handled");
+		DirectionShortcutKeyUpResult result =
+			gesture.OnKeyUp(shiftKey, ModifierKeys.Control);
+		AssertTrue(result.Handled, $"Ctrl+{shiftKey} key-up handled");
+		AssertEqual<ParagraphDirection?>(
+			expectedDirection,
+			result.Direction,
+			$"Ctrl+{shiftKey} direction");
+		formatting.ApplyDirection(result.Direction!.Value);
+	}
+
+	private static void AssertMarkerPixels(
+		RichTextBox editor,
+		Paragraph paragraph,
+		ParagraphDirection direction,
+		string label)
+	{
+		editor.IsReadOnly = true;
+		DrainDispatcher();
+
+		int width = Math.Max(1, (int)Math.Ceiling(editor.ActualWidth));
+		int height = Math.Max(1, (int)Math.Ceiling(editor.ActualHeight));
+		RenderTargetBitmap bitmap = new RenderTargetBitmap(
+			width,
+			height,
+			96.0,
+			96.0,
+			PixelFormats.Pbgra32);
+		bitmap.Render(editor);
+
+		byte[] pixels = new byte[width * height * 4];
+		bitmap.CopyPixels(pixels, width * 4, 0);
+
+		Rect textBounds = LogicalBounds(paragraph);
+		int top = Math.Clamp((int)Math.Floor(textBounds.Top) - 5, 0, height - 1);
+		int bottom = Math.Clamp((int)Math.Ceiling(textBounds.Bottom) + 5, 0, height - 1);
+		int left;
+		int right;
+		if (direction == ParagraphDirection.RightToLeft)
+		{
+			left = Math.Clamp((int)Math.Ceiling(textBounds.Right) + 1, 0, width - 1);
+			right = width - 1;
+		}
+		else
+		{
+			left = 0;
+			right = Math.Clamp((int)Math.Floor(textBounds.Left) - 1, 0, width - 1);
+		}
+
+		int darkPixels = 0;
+		for (int y = top; y <= bottom; y++)
+		{
+			for (int x = left; x <= right; x++)
+			{
+				int offset = (y * width + x) * 4;
+				byte blue = pixels[offset];
+				byte green = pixels[offset + 1];
+				byte red = pixels[offset + 2];
+				byte alpha = pixels[offset + 3];
+				if (alpha > 128 && red < 100 && green < 100 && blue < 100)
+					darkPixels++;
+			}
+		}
+
+		editor.IsReadOnly = false;
+		AssertTrue(
+			darkPixels >= 2,
+			$"{label}: expected visible marker pixels inside editor, found {darkPixels}.");
+	}
+
+	private static Rect LogicalBounds(Paragraph paragraph)
+	{
+		List<Rect> rectangles = new List<Rect>();
+		TextPointer? pointer = paragraph.ContentStart;
+		while (pointer != null && pointer.CompareTo(paragraph.ContentEnd) <= 0)
+		{
+			Rect rectangle = pointer.GetCharacterRect(LogicalDirection.Forward);
+			if (!rectangle.IsEmpty)
+				rectangles.Add(rectangle);
+
+			if (pointer.CompareTo(paragraph.ContentEnd) == 0)
+				break;
+			pointer = pointer.GetNextInsertionPosition(LogicalDirection.Forward) ??
+				paragraph.ContentEnd;
+		}
+
+		if (rectangles.Count == 0)
+			throw new InvalidOperationException("No rendered character rectangles were found.");
+
+		return rectangles.Aggregate(Rect.Union);
+	}
+
+	private static void AssertBrushColor(
+		Brush expected,
+		object actual,
+		string label)
+	{
+		if (expected is not SolidColorBrush expectedSolid ||
+			actual is not SolidColorBrush actualSolid)
+		{
+			throw new InvalidOperationException(
+				$"{label}: expected and actual values must be solid brushes.");
+		}
+
+		AssertEqual(expectedSolid.Color, actualSolid.Color, label);
 	}
 
 	private static Paragraph Reset(RichTextBox editor, string text)
@@ -347,24 +665,7 @@ internal static class Program
 		Window host)
 	{
 		DrainDispatcher();
-		List<Rect> rectangles = new List<Rect>();
-		TextPointer? pointer = paragraph.ContentStart;
-		while (pointer != null && pointer.CompareTo(paragraph.ContentEnd) <= 0)
-		{
-			Rect rectangle = pointer.GetCharacterRect(LogicalDirection.Forward);
-			if (!rectangle.IsEmpty)
-				rectangles.Add(rectangle);
-
-			if (pointer.CompareTo(paragraph.ContentEnd) == 0)
-				break;
-			pointer = pointer.GetNextInsertionPosition(LogicalDirection.Forward) ??
-				paragraph.ContentEnd;
-		}
-
-		if (rectangles.Count == 0)
-			throw new InvalidOperationException("No rendered character rectangles were found.");
-
-		Rect logical = rectangles.Aggregate(Rect.Union);
+		Rect logical = LogicalBounds(paragraph);
 		GeneralTransform transform = editor.TransformToAncestor(host);
 		return transform.TransformBounds(logical);
 	}
