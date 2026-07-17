@@ -2,9 +2,13 @@ name: Build GrassiNotes for Windows
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches:
+      - main
   push:
     branches:
       - main
+      - "agent/**"
     tags:
       - "v*"
 
@@ -54,7 +58,13 @@ jobs:
 
       - name: Restore dependencies
         shell: pwsh
-        run: dotnet restore .\GrassiNotes.csproj
+        run: |
+          dotnet restore .\GrassiNotes.csproj
+          dotnet restore .\GrassiNotes.FormattingTests\GrassiNotes.FormattingTests.csproj
+
+      - name: Validate formatting behavior
+        shell: pwsh
+        run: dotnet run --project .\GrassiNotes.FormattingTests\GrassiNotes.FormattingTests.csproj -c Release --no-restore
 
       - name: Publish self-contained x64 application
         shell: pwsh
@@ -71,6 +81,12 @@ jobs:
 
           Copy-Item .\dist\portable\GrassiNotes.exe ".\dist\GrassiNotes-$env:APP_VERSION-x64.exe"
           Copy-Item .\README-FA.md .\dist\portable\README-FA.md
+
+          $actualVersion = (Get-Item .\dist\portable\GrassiNotes.exe).VersionInfo.FileVersion
+          $expectedVersion = "$env:APP_VERSION.0"
+          if ($actualVersion -ne $expectedVersion) {
+            throw "Published executable version '$actualVersion' does not match '$expectedVersion'."
+          }
 
       - name: Create portable ZIP
         shell: pwsh
@@ -135,6 +151,15 @@ jobs:
             dist/GrassiNotes-Setup-${{ steps.version.outputs.version }}.exe
             dist/GrassiNotes-${{ steps.version.outputs.version }}-SHA256.txt
           if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload installer-only artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GrassiNotes-Setup-${{ steps.version.outputs.version }}-Windows
+          path: dist/GrassiNotes-Setup-${{ steps.version.outputs.version }}.exe
+          if-no-files-found: error
+          compression-level: 0
           retention-days: 30
 
       - name: Publish files to GitHub Release

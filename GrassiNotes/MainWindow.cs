@@ -90,6 +90,8 @@ public sealed class MainWindow : Window
 
 	private System.Windows.Controls.RichTextBox _editor;
 
+	private EditorFormattingController _formatting;
+
 	private TextBlock _titleText;
 
 	private TextBlock _saveStatus;
@@ -173,6 +175,7 @@ public sealed class MainWindow : Window
 		});
 		BuildUi();
 		base.PreviewKeyDown += OnPreviewKeyDown;
+		base.PreviewKeyUp += OnPreviewKeyUp;
 		base.Closing += OnClosing;
 		base.SourceInitialized += OnSourceInitialized;
 		base.Drop += OnDrop;
@@ -374,6 +377,7 @@ public sealed class MainWindow : Window
 			IsUndoEnabled = true,
 			UndoLimit = 200
 		};
+		_formatting = new EditorFormattingController(_editor, _appFont);
 		ApplyScrollBarStyle(_editor);
 		SpellCheck.SetIsEnabled(_editor, false);
 		Grid.SetRow(_editor, 4);
@@ -390,7 +394,6 @@ public sealed class MainWindow : Window
 			}
 		};
 		_editor.PreviewKeyDown += EditorPreviewKeyDown;
-		_editor.PreviewTextInput += EditorPreviewTextInput;
 		System.Windows.DataObject.AddPastingHandler(_editor, OnPasting);
 		BuildContextPopup();
 		BuildFindPopup();
@@ -704,9 +707,8 @@ public sealed class MainWindow : Window
 			button.PreviewMouseLeftButtonUp += delegate { button.Opacity = 1.0; };
 			button.Click += delegate
 			{
-				_editor.Selection.ApplyPropertyValue(TextElement.ForegroundProperty, brush);
+				_formatting.ApplyTextColor(brush);
 				_colorPopup.IsOpen = false;
-				_editor.Focus();
 			};
 			uniformGrid.Children.Add(button);
 		}
@@ -959,10 +961,7 @@ public sealed class MainWindow : Window
 		doc.PagePadding = new Thickness(0.0);
 		doc.Foreground = _theme.Text;
 		NormalizeDocumentFont(doc);
-		foreach (Paragraph paragraph in EnumerateParagraphs(doc.Blocks))
-		{
-			ApplyAutoDirection(paragraph);
-		}
+		_formatting.NormalizeDocument(doc);
 	}
 
 	private void NormalizeDocumentFont(FlowDocument document)
@@ -976,140 +975,10 @@ public sealed class MainWindow : Window
 		catch { }
 	}
 
-	private static bool IsRtlCharacter(char c)
-	{
-		return (c >= '\u0590' && c <= '\u08FF') ||
-		       (c >= '\uFB1D' && c <= '\uFDFF') ||
-		       (c >= '\uFE70' && c <= '\uFEFF');
-	}
-
-	private static string DetectDirection(Paragraph paragraph)
-	{
-		string text = new TextRange(paragraph.ContentStart, paragraph.ContentEnd).Text;
-		foreach (char c in text)
-		{
-			if (!char.IsWhiteSpace(c) && !char.IsPunctuation(c) && !char.IsSymbol(c) && !char.IsDigit(c))
-				return IsRtlCharacter(c) ? "RTL" : "LTR";
-		}
-		return "Auto";
-	}
-
-	private void ApplyAutoDirection(Paragraph paragraph)
-	{
-		string explicitDirection = EditorMetadata.GetExplicitDirection(paragraph);
-		if (explicitDirection == "RTL") { ApplyParagraphDirection(paragraph, true, true); return; }
-		if (explicitDirection == "LTR") { ApplyParagraphDirection(paragraph, false, true); return; }
-		string detected = DetectDirection(paragraph);
-		if (detected != "Auto") ApplyParagraphDirection(paragraph, detected == "RTL", false);
-	}
-
-	private static List? OwningList(Paragraph paragraph)
-	{
-		DependencyObject? current = paragraph.Parent;
-		while (current != null)
-		{
-			if (current is List list) return list;
-			if (current is FrameworkContentElement fce) current = fce.Parent;
-			else break;
-		}
-		return null;
-	}
-
-	private static string EffectiveDirection(Paragraph paragraph)
-	{
-		string explicitDirection = EditorMetadata.GetExplicitDirection(paragraph);
-		if (explicitDirection == "RTL" || explicitDirection == "LTR") return explicitDirection;
-		string detected = DetectDirection(paragraph);
-		if (detected != "Auto") return detected;
-		return paragraph.FlowDirection == System.Windows.FlowDirection.RightToLeft ? "RTL" : "LTR";
-	}
-
-	private void ApplyParagraphDirection(Paragraph paragraph, bool rtl, bool explicitChoice)
-	{
-		System.Windows.FlowDirection flow = rtl ? System.Windows.FlowDirection.RightToLeft : System.Windows.FlowDirection.LeftToRight;
-		TextAlignment alignment = rtl ? TextAlignment.Right : TextAlignment.Left;
-		paragraph.SetCurrentValue(FrameworkElement.FlowDirectionProperty, flow);
-		paragraph.SetCurrentValue(Block.TextAlignmentProperty, alignment);
-		if (explicitChoice) EditorMetadata.SetExplicitDirection(paragraph, rtl ? "RTL" : "LTR");
-
-		List? list = OwningList(paragraph);
-		if (list != null)
-		{
-			list.SetCurrentValue(FrameworkElement.FlowDirectionProperty, flow);
-			list.SetCurrentValue(Block.TextAlignmentProperty, alignment);
-			list.MarkerOffset = 18.0;
-			if (explicitChoice) EditorMetadata.SetExplicitDirection(list, rtl ? "RTL" : "LTR");
-			foreach (ListItem item in list.ListItems)
-			{
-				item.SetCurrentValue(FrameworkElement.FlowDirectionProperty, flow);
-				if (explicitChoice) EditorMetadata.SetExplicitDirection(item, rtl ? "RTL" : "LTR");
-				foreach (Paragraph child in EnumerateParagraphs(item.Blocks))
-				{
-					child.SetCurrentValue(FrameworkElement.FlowDirectionProperty, flow);
-					child.SetCurrentValue(Block.TextAlignmentProperty, alignment);
-					if (explicitChoice) EditorMetadata.SetExplicitDirection(child, rtl ? "RTL" : "LTR");
-				}
-			}
-		}
-	}
-
-	private void ApplySelectionDirectionFormatting(bool rtl)
-	{
-		System.Windows.FlowDirection flow = rtl ? System.Windows.FlowDirection.RightToLeft : System.Windows.FlowDirection.LeftToRight;
-		TextAlignment alignment = rtl ? TextAlignment.Right : TextAlignment.Left;
-		try
-		{
-			_editor.Selection.ApplyPropertyValue(FrameworkElement.FlowDirectionProperty, flow);
-			_editor.Selection.ApplyPropertyValue(Block.TextAlignmentProperty, alignment);
-		}
-		catch { }
-	}
-
-	private void SetSelectionDirection(bool rtl)
-	{
-		List<Paragraph> paragraphs = SelectedParagraphs().Distinct().ToList();
-		if (paragraphs.Count == 0 && _editor.CaretPosition.Paragraph is Paragraph current) paragraphs.Add(current);
-		_suppress = true;
-		try
-		{
-			ApplySelectionDirectionFormatting(rtl);
-			foreach (Paragraph paragraph in paragraphs) ApplyParagraphDirection(paragraph, rtl, true);
-		}
-		finally { _suppress = false; }
-		_editor.Focus();
-		QueueAutosave();
-	}
-
-	private void ScheduleDirectionReapply(Paragraph? paragraph, string? forcedDirection = null, bool makeExplicit = false)
-	{
-		if (paragraph == null) return;
-		base.Dispatcher.BeginInvoke((Action)delegate
-		{
-			if (paragraph.Parent == null) paragraph = _editor.CaretPosition.Paragraph;
-			if (paragraph == null) return;
-			string direction = forcedDirection ?? EffectiveDirection(paragraph);
-			_suppress = true;
-			try { ApplyParagraphDirection(paragraph, direction == "RTL", makeExplicit || EditorMetadata.GetExplicitDirection(paragraph) != "Auto"); }
-			finally { _suppress = false; }
-		}, DispatcherPriority.ContextIdle);
-	}
-
 	private void ToggleList(RoutedUICommand command)
 	{
-		Paragraph? before = _editor.CaretPosition.Paragraph;
-		bool rtl = before?.FlowDirection == System.Windows.FlowDirection.RightToLeft;
-		string explicitDirection = before == null ? "Auto" : EditorMetadata.GetExplicitDirection(before);
-		Execute(command);
-		base.Dispatcher.BeginInvoke((Action)delegate
-		{
-			Paragraph? after = _editor.CaretPosition.Paragraph;
-			if (after != null)
-			{
-				bool direction = explicitDirection == "RTL" || (explicitDirection == "Auto" && rtl);
-				ApplyParagraphDirection(after, direction, explicitDirection != "Auto");
-			}
-			UpdateFormatState();
-		}, DispatcherPriority.ContextIdle);
+		_formatting.ToggleList(command);
+		UpdateFormatState();
 	}
 
 	private void OnPasting(object sender, DataObjectPastingEventArgs e)
@@ -1117,8 +986,7 @@ public sealed class MainWindow : Window
 		base.Dispatcher.BeginInvoke((Action)delegate
 		{
 			NormalizeDocumentFont(_editor.Document);
-			Paragraph? paragraph = _editor.CaretPosition.Paragraph;
-			if (paragraph != null) ApplyAutoDirection(paragraph);
+			_formatting.NormalizeParagraphAtCaret();
 			UpdateFormatState();
 		}, DispatcherPriority.Background);
 	}
@@ -1339,8 +1207,6 @@ public sealed class MainWindow : Window
 	{
 		if (!_suppress && _active != null)
 		{
-			Paragraph? paragraph = _editor.CaretPosition.Paragraph;
-			ScheduleDirectionReapply(paragraph);
 			_active.IsDirty = true;
 			_saveStatus.Text = "Unsaved";
 			UpdateTitle();
@@ -1458,86 +1324,14 @@ public sealed class MainWindow : Window
 
 	private void Execute(RoutedUICommand command)
 	{
-		command.Execute(null, _editor);
-		_editor.Focus();
+		_formatting.ExecuteInlineCommand(command);
 		UpdateFormatState();
 	}
 
 	private void ApplyHeading(int level)
 	{
-		foreach (Paragraph item in SelectedParagraphs())
-		{
-			TextRange paragraphRange = new TextRange(item.ContentStart, item.ContentEnd);
-			paragraphRange.ApplyPropertyValue(TextElement.FontFamilyProperty, _appFont);
-			if (level == 0)
-			{
-				item.Tag = null;
-				item.FontFamily = _appFont;
-				item.FontSize = 14.0;
-				item.FontWeight = FontWeights.Normal;
-				item.Margin = new Thickness(0.0, 0.0, 0.0, 8.0);
-			}
-			else
-			{
-				item.Tag = "h" + level;
-				item.FontFamily = _appFont;
-				MarkdownCodec.ApplyHeadingStyle(item, level);
-				item.Margin = level switch
-				{
-					1 => new Thickness(0.0, 16.0, 0.0, 8.0),
-					2 => new Thickness(0.0, 14.0, 0.0, 7.0),
-					_ => new Thickness(0.0, 11.0, 0.0, 6.0)
-				};
-			}
-		}
-		NormalizeDocumentFont(_editor.Document);
-		_editor.Focus();
+		_formatting.ApplyHeading(level);
 		UpdateFormatState();
-	}
-
-	private IEnumerable<Paragraph> SelectedParagraphs()
-	{
-		TextPointer start = _editor.Selection.Start;
-		TextPointer end = _editor.Selection.End;
-		foreach (Paragraph item in EnumerateParagraphs(_editor.Document.Blocks))
-		{
-			if (item.ContentEnd.CompareTo(start) >= 0 && item.ContentStart.CompareTo(end) <= 0)
-			{
-				yield return item;
-			}
-		}
-	}
-
-	private static IEnumerable<Paragraph> EnumerateParagraphs(BlockCollection blocks)
-	{
-		foreach (Block block in blocks)
-		{
-			if (block is Paragraph paragraph)
-			{
-				yield return paragraph;
-			}
-			else if (block is Section section)
-			{
-				foreach (Paragraph item in EnumerateParagraphs(section.Blocks))
-				{
-					yield return item;
-				}
-			}
-			else
-			{
-				if (!(block is List list))
-				{
-					continue;
-				}
-				foreach (ListItem listItem in list.ListItems)
-				{
-					foreach (Paragraph item2 in EnumerateParagraphs(listItem.Blocks))
-					{
-						yield return item2;
-					}
-				}
-			}
-		}
 	}
 
 	private void ChangeZoom(double delta)
@@ -1578,15 +1372,9 @@ public sealed class MainWindow : Window
 	{
 		bool flag = (Keyboard.Modifiers & ModifierKeys.Control) != 0;
 		bool flag2 = (Keyboard.Modifiers & ModifierKeys.Shift) != 0;
-		if (flag && e.Key == Key.RightShift)
+		if (_formatting.TryApplyDirectionShortcut(e.Key, Keyboard.Modifiers))
 		{
-			SetSelectionDirection(true);
-			e.Handled = true;
-			return;
-		}
-		if (flag && e.Key == Key.LeftShift)
-		{
-			SetSelectionDirection(false);
+			QueueAutosave();
 			e.Handled = true;
 			return;
 		}
@@ -1696,15 +1484,11 @@ public sealed class MainWindow : Window
 		}
 	}
 
-	private void EditorPreviewTextInput(object sender, TextCompositionEventArgs e)
+	private void OnPreviewKeyUp(object sender, System.Windows.Input.KeyEventArgs e)
 	{
-		Paragraph? paragraph = _editor.CaretPosition.Paragraph;
-		if (paragraph == null) return;
-		string explicitDirection = EditorMetadata.GetExplicitDirection(paragraph);
-		if (explicitDirection == "RTL" || explicitDirection == "LTR")
-			ScheduleDirectionReapply(paragraph, explicitDirection, true);
-		else
-			ScheduleDirectionReapply(paragraph);
+		bool controlDown = (Keyboard.Modifiers & ModifierKeys.Control) != 0;
+		if (controlDown && (e.Key == Key.RightShift || e.Key == Key.LeftShift))
+			e.Handled = true;
 	}
 
 	private void EditorPreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
@@ -1718,22 +1502,9 @@ public sealed class MainWindow : Window
 
 		if (e.Key == Key.Enter || e.Key == Key.Return)
 		{
-			Paragraph? before = _editor.CaretPosition.Paragraph;
-			if (before == null) return;
-			string explicitDirection = EditorMetadata.GetExplicitDirection(before);
-			string effectiveDirection = EffectiveDirection(before);
-			base.Dispatcher.BeginInvoke((Action)delegate
-			{
-				Paragraph? after = _editor.CaretPosition.Paragraph;
-				if (after == null) return;
-				_suppress = true;
-				try
-				{
-					ApplyParagraphDirection(after, effectiveDirection == "RTL", explicitDirection != "Auto");
-					if (explicitDirection != "Auto") EditorMetadata.SetExplicitDirection(after, explicitDirection);
-				}
-				finally { _suppress = false; }
-			}, DispatcherPriority.ContextIdle);
+			_formatting.InsertParagraphBreak();
+			UpdateFormatState();
+			e.Handled = true;
 		}
 	}
 

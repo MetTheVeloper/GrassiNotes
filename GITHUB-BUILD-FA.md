@@ -10,10 +10,10 @@
 
 پس از موفقیت Workflow، چهار فایل ساخته می‌شوند:
 
-- `GrassiNotes-2.1.1-x64.exe`
-- `GrassiNotes-Portable-2.1.1.zip`
-- `GrassiNotes-Setup-2.1.1.exe`
-- `GrassiNotes-2.1.1-SHA256.txt`
+- `GrassiNotes-2.2.0-x64.exe`
+- `GrassiNotes-Portable-2.2.0.zip`
+- `GrassiNotes-Setup-2.2.0.exe`
+- `GrassiNotes-2.2.0-SHA256.txt`
 
 ## Build دستی در GitHub
 
@@ -22,7 +22,7 @@
 3. از ستون سمت چپ **Build GrassiNotes for Windows** را انتخاب کنید.
 4. دکمه **Run workflow** را بزنید.
 5. پس از سبزشدن Workflow، همان اجرا را باز کنید.
-6. پایین صفحه، در بخش **Artifacts**، فایل `GrassiNotes-2.1.1-Windows` را دانلود کنید.
+6. پایین صفحه، در بخش **Artifacts**، فایل `GrassiNotes-Setup-2.2.0-Windows` را دانلود کنید.
 
 ## Build خودکار
 
@@ -33,7 +33,7 @@
 برای ساخت Release، یک Tag دقیقاً مطابق Version پروژه ایجاد کنید. برای نسخه فعلی:
 
 ```text
-v2.1.1
+v2.2.0
 ```
 
 با Push شدن این Tag، Workflow علاوه بر Artifact، یک GitHub Release می‌سازد و فایل‌های EXE، Setup، Portable ZIP و Checksum را به آن پیوست می‌کند.
@@ -49,7 +49,7 @@ GrassiNotes.csproj
 مقدار این خط را تغییر دهید:
 
 ```xml
-<Version>2.1.1</Version>
+<Version>2.2.0</Version>
 ```
 
 همچنین سه مقدار Version در `Properties/AssemblyInfo.cs` را با نسخه جدید هماهنگ کنید. سپس Commit و Push کنید.
