@@ -90,7 +90,11 @@ public sealed class MainWindow : Window
 
 	private System.Windows.Controls.RichTextBox _editor;
 
+	private EditorFormattingController _formatting;
+
 	private TextBlock _titleText;
+
+	private System.Windows.Shapes.Path _headerLogo;
 
 	private TextBlock _saveStatus;
 
@@ -138,6 +142,9 @@ public sealed class MainWindow : Window
 
 	private List<TextRange> _findMatches = new List<TextRange>();
 
+	private readonly DirectionShortcutGesture _directionShortcut =
+		new DirectionShortcutGesture();
+
 	public MainWindow(bool startHidden, System.Windows.Media.FontFamily appFont)
 	{
 		_startHidden = startHidden;
@@ -172,13 +179,17 @@ public sealed class MainWindow : Window
 			UseAeroCaptionButtons = false
 		});
 		BuildUi();
+		base.SizeChanged += delegate { UpdateWindowCorners(); };
+		base.Deactivated += delegate { _directionShortcut.Reset(); };
 		base.PreviewKeyDown += OnPreviewKeyDown;
+		base.PreviewKeyUp += OnPreviewKeyUp;
 		base.Closing += OnClosing;
 		base.SourceInitialized += OnSourceInitialized;
 		base.Drop += OnDrop;
 		base.StateChanged += delegate
 		{
 			UpdateMaximizeGlyph();
+			UpdateWindowCorners();
 		};
 		_autosave.Tick += delegate
 		{
@@ -214,9 +225,10 @@ public sealed class MainWindow : Window
 						FilePath = current.FilePath,
 						IsDirty = current.IsDirty,
 						Kind = current.Kind,
-						Zoom = current.Zoom,
+						Zoom = DocumentMetadata.NormalizeZoom(current.Zoom),
 						Document = DocumentSerializer.FromXaml(current.Xaml)
 					};
+					DocumentMetadata.SetZoom(documentTab.Document, documentTab.Zoom);
 					ConfigureDocument(documentTab.Document);
 					AddDocument(documentTab, select: false);
 				}
@@ -276,12 +288,10 @@ public sealed class MainWindow : Window
 		titleGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.0, GridUnitType.Star) });
 		titleGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 		_title.Child = titleGrid;
-		System.Windows.Controls.Image logo = LoadLogo();
-		logo.Width = 20.0;
-		logo.Height = 20.0;
-		logo.Margin = new Thickness(0.0, 0.0, 9.0, 0.0);
-		logo.VerticalAlignment = VerticalAlignment.Center;
-		titleGrid.Children.Add(logo);
+		_headerLogo = HeaderLogo.Create();
+		_headerLogo.Margin = new Thickness(0.0, 0.0, 9.0, 0.0);
+		_headerLogo.VerticalAlignment = VerticalAlignment.Center;
+		titleGrid.Children.Add(_headerLogo);
 		_titleText = new TextBlock
 		{
 			Text = "GrassiNotes",
@@ -374,12 +384,18 @@ public sealed class MainWindow : Window
 			IsUndoEnabled = true,
 			UndoLimit = 200
 		};
+		_formatting = new EditorFormattingController(_editor, _appFont);
 		ApplyScrollBarStyle(_editor);
 		SpellCheck.SetIsEnabled(_editor, false);
 		Grid.SetRow(_editor, 4);
 		_root.Children.Add(_editor);
 		_editor.TextChanged += OnEditorChanged;
-		_editor.SelectionChanged += delegate { UpdateStatus(); UpdateFormatState(); };
+		_editor.SelectionChanged += delegate
+		{
+			_formatting.RememberTypingState();
+			UpdateStatus();
+			UpdateFormatState();
+		};
 		_editor.PreviewMouseRightButtonUp += delegate(object _, MouseButtonEventArgs e) { OpenEditorContext(); e.Handled = true; };
 		_editor.PreviewMouseWheel += delegate(object _, MouseWheelEventArgs e)
 		{
@@ -390,7 +406,6 @@ public sealed class MainWindow : Window
 			}
 		};
 		_editor.PreviewKeyDown += EditorPreviewKeyDown;
-		_editor.PreviewTextInput += EditorPreviewTextInput;
 		System.Windows.DataObject.AddPastingHandler(_editor, OnPasting);
 		BuildContextPopup();
 		BuildFindPopup();
@@ -449,22 +464,6 @@ public sealed class MainWindow : Window
 			VerticalAlignment = VerticalAlignment.Center,
 			HorizontalAlignment = align
 		};
-	}
-
-	private System.Windows.Controls.Image LoadLogo()
-	{
-		try
-		{
-			using MemoryStream streamSource = new MemoryStream(EmbeddedAssets.AppPng);
-			BitmapImage bitmapImage = new BitmapImage();
-			bitmapImage.BeginInit();
-			bitmapImage.StreamSource = streamSource;
-			bitmapImage.CacheOption = BitmapCacheOption.OnLoad;
-			bitmapImage.EndInit();
-			bitmapImage.Freeze();
-			return new System.Windows.Controls.Image { Source = bitmapImage };
-		}
-		catch { return new System.Windows.Controls.Image(); }
 	}
 
 	private System.Windows.Controls.Button ChromeButton(string glyph, RoutedEventHandler click, string tip, string? name = null)
@@ -671,6 +670,7 @@ public sealed class MainWindow : Window
 
 	private void BuildColorPopup()
 	{
+		StackPanel panel = new StackPanel();
 		UniformGrid uniformGrid = new UniformGrid
 		{
 			Columns = 5,
@@ -704,12 +704,24 @@ public sealed class MainWindow : Window
 			button.PreviewMouseLeftButtonUp += delegate { button.Opacity = 1.0; };
 			button.Click += delegate
 			{
-				_editor.Selection.ApplyPropertyValue(TextElement.ForegroundProperty, brush);
+				_formatting.ApplyTextColor(brush);
 				_colorPopup.IsOpen = false;
-				_editor.Focus();
 			};
 			uniformGrid.Children.Add(button);
 		}
+		panel.Children.Add(uniformGrid);
+		panel.Children.Add(PopupSeparator());
+		System.Windows.Controls.Button automatic = PopupMenuButton(
+			"A",
+			"Automatic",
+			"Theme color",
+			delegate
+			{
+				_formatting.ApplyAutomaticTextColor(_theme.Text);
+				_colorPopup.IsOpen = false;
+			});
+		automatic.Tag = "AutomaticColor";
+		panel.Children.Add(automatic);
 		_colorPopup = new Popup
 		{
 			PlacementTarget = _colorButton,
@@ -718,7 +730,7 @@ public sealed class MainWindow : Window
 			AllowsTransparency = true,
 			Child = new Border
 			{
-				Child = uniformGrid,
+				Child = panel,
 				CornerRadius = new CornerRadius(7.0),
 				BorderThickness = new Thickness(1.0),
 				Width = 178.0
@@ -939,7 +951,7 @@ public sealed class MainWindow : Window
 			_active = d;
 			d.IsActive = true;
 			_editor.Document = d.Document;
-			_editor.FontSize = 15.0 * d.Zoom;
+			EditorZoom.Apply(_editor, d.Zoom);
 			_suppress = false;
 			UpdateTitle();
 			RebuildTabs();
@@ -958,11 +970,9 @@ public sealed class MainWindow : Window
 		doc.FontSize = 14.0;
 		doc.PagePadding = new Thickness(0.0);
 		doc.Foreground = _theme.Text;
+		EditorFormattingController.RefreshAutomaticTextColors(doc, _theme.Text);
 		NormalizeDocumentFont(doc);
-		foreach (Paragraph paragraph in EnumerateParagraphs(doc.Blocks))
-		{
-			ApplyAutoDirection(paragraph);
-		}
+		_formatting.NormalizeDocument(doc);
 	}
 
 	private void NormalizeDocumentFont(FlowDocument document)
@@ -976,140 +986,10 @@ public sealed class MainWindow : Window
 		catch { }
 	}
 
-	private static bool IsRtlCharacter(char c)
-	{
-		return (c >= '\u0590' && c <= '\u08FF') ||
-		       (c >= '\uFB1D' && c <= '\uFDFF') ||
-		       (c >= '\uFE70' && c <= '\uFEFF');
-	}
-
-	private static string DetectDirection(Paragraph paragraph)
-	{
-		string text = new TextRange(paragraph.ContentStart, paragraph.ContentEnd).Text;
-		foreach (char c in text)
-		{
-			if (!char.IsWhiteSpace(c) && !char.IsPunctuation(c) && !char.IsSymbol(c) && !char.IsDigit(c))
-				return IsRtlCharacter(c) ? "RTL" : "LTR";
-		}
-		return "Auto";
-	}
-
-	private void ApplyAutoDirection(Paragraph paragraph)
-	{
-		string explicitDirection = EditorMetadata.GetExplicitDirection(paragraph);
-		if (explicitDirection == "RTL") { ApplyParagraphDirection(paragraph, true, true); return; }
-		if (explicitDirection == "LTR") { ApplyParagraphDirection(paragraph, false, true); return; }
-		string detected = DetectDirection(paragraph);
-		if (detected != "Auto") ApplyParagraphDirection(paragraph, detected == "RTL", false);
-	}
-
-	private static List? OwningList(Paragraph paragraph)
-	{
-		DependencyObject? current = paragraph.Parent;
-		while (current != null)
-		{
-			if (current is List list) return list;
-			if (current is FrameworkContentElement fce) current = fce.Parent;
-			else break;
-		}
-		return null;
-	}
-
-	private static string EffectiveDirection(Paragraph paragraph)
-	{
-		string explicitDirection = EditorMetadata.GetExplicitDirection(paragraph);
-		if (explicitDirection == "RTL" || explicitDirection == "LTR") return explicitDirection;
-		string detected = DetectDirection(paragraph);
-		if (detected != "Auto") return detected;
-		return paragraph.FlowDirection == System.Windows.FlowDirection.RightToLeft ? "RTL" : "LTR";
-	}
-
-	private void ApplyParagraphDirection(Paragraph paragraph, bool rtl, bool explicitChoice)
-	{
-		System.Windows.FlowDirection flow = rtl ? System.Windows.FlowDirection.RightToLeft : System.Windows.FlowDirection.LeftToRight;
-		TextAlignment alignment = rtl ? TextAlignment.Right : TextAlignment.Left;
-		paragraph.SetCurrentValue(FrameworkElement.FlowDirectionProperty, flow);
-		paragraph.SetCurrentValue(Block.TextAlignmentProperty, alignment);
-		if (explicitChoice) EditorMetadata.SetExplicitDirection(paragraph, rtl ? "RTL" : "LTR");
-
-		List? list = OwningList(paragraph);
-		if (list != null)
-		{
-			list.SetCurrentValue(FrameworkElement.FlowDirectionProperty, flow);
-			list.SetCurrentValue(Block.TextAlignmentProperty, alignment);
-			list.MarkerOffset = 18.0;
-			if (explicitChoice) EditorMetadata.SetExplicitDirection(list, rtl ? "RTL" : "LTR");
-			foreach (ListItem item in list.ListItems)
-			{
-				item.SetCurrentValue(FrameworkElement.FlowDirectionProperty, flow);
-				if (explicitChoice) EditorMetadata.SetExplicitDirection(item, rtl ? "RTL" : "LTR");
-				foreach (Paragraph child in EnumerateParagraphs(item.Blocks))
-				{
-					child.SetCurrentValue(FrameworkElement.FlowDirectionProperty, flow);
-					child.SetCurrentValue(Block.TextAlignmentProperty, alignment);
-					if (explicitChoice) EditorMetadata.SetExplicitDirection(child, rtl ? "RTL" : "LTR");
-				}
-			}
-		}
-	}
-
-	private void ApplySelectionDirectionFormatting(bool rtl)
-	{
-		System.Windows.FlowDirection flow = rtl ? System.Windows.FlowDirection.RightToLeft : System.Windows.FlowDirection.LeftToRight;
-		TextAlignment alignment = rtl ? TextAlignment.Right : TextAlignment.Left;
-		try
-		{
-			_editor.Selection.ApplyPropertyValue(FrameworkElement.FlowDirectionProperty, flow);
-			_editor.Selection.ApplyPropertyValue(Block.TextAlignmentProperty, alignment);
-		}
-		catch { }
-	}
-
-	private void SetSelectionDirection(bool rtl)
-	{
-		List<Paragraph> paragraphs = SelectedParagraphs().Distinct().ToList();
-		if (paragraphs.Count == 0 && _editor.CaretPosition.Paragraph is Paragraph current) paragraphs.Add(current);
-		_suppress = true;
-		try
-		{
-			ApplySelectionDirectionFormatting(rtl);
-			foreach (Paragraph paragraph in paragraphs) ApplyParagraphDirection(paragraph, rtl, true);
-		}
-		finally { _suppress = false; }
-		_editor.Focus();
-		QueueAutosave();
-	}
-
-	private void ScheduleDirectionReapply(Paragraph? paragraph, string? forcedDirection = null, bool makeExplicit = false)
-	{
-		if (paragraph == null) return;
-		base.Dispatcher.BeginInvoke((Action)delegate
-		{
-			if (paragraph.Parent == null) paragraph = _editor.CaretPosition.Paragraph;
-			if (paragraph == null) return;
-			string direction = forcedDirection ?? EffectiveDirection(paragraph);
-			_suppress = true;
-			try { ApplyParagraphDirection(paragraph, direction == "RTL", makeExplicit || EditorMetadata.GetExplicitDirection(paragraph) != "Auto"); }
-			finally { _suppress = false; }
-		}, DispatcherPriority.ContextIdle);
-	}
-
 	private void ToggleList(RoutedUICommand command)
 	{
-		Paragraph? before = _editor.CaretPosition.Paragraph;
-		bool rtl = before?.FlowDirection == System.Windows.FlowDirection.RightToLeft;
-		string explicitDirection = before == null ? "Auto" : EditorMetadata.GetExplicitDirection(before);
-		Execute(command);
-		base.Dispatcher.BeginInvoke((Action)delegate
-		{
-			Paragraph? after = _editor.CaretPosition.Paragraph;
-			if (after != null)
-			{
-				bool direction = explicitDirection == "RTL" || (explicitDirection == "Auto" && rtl);
-				ApplyParagraphDirection(after, direction, explicitDirection != "Auto");
-			}
-			UpdateFormatState();
-		}, DispatcherPriority.ContextIdle);
+		_formatting.ToggleList(command);
+		UpdateFormatState();
 	}
 
 	private void OnPasting(object sender, DataObjectPastingEventArgs e)
@@ -1117,8 +997,7 @@ public sealed class MainWindow : Window
 		base.Dispatcher.BeginInvoke((Action)delegate
 		{
 			NormalizeDocumentFont(_editor.Document);
-			Paragraph? paragraph = _editor.CaretPosition.Paragraph;
-			if (paragraph != null) ApplyAutoDirection(paragraph);
+			_formatting.NormalizeParagraphAtCaret();
 			UpdateFormatState();
 		}, DispatcherPriority.Background);
 	}
@@ -1200,10 +1079,12 @@ public sealed class MainWindow : Window
 			}
 			DocumentKind kind = FileDialogs.KindFromPath(full);
 			FlowDocument flowDocument;
+			double zoom = 1.0;
 			switch (kind)
 			{
 			case DocumentKind.Native:
 				flowDocument = DocumentSerializer.FromXaml(await File.ReadAllTextAsync(full));
+				zoom = DocumentMetadata.GetZoom(flowDocument);
 				break;
 			case DocumentKind.Markdown:
 				flowDocument = MarkdownCodec.Parse(await File.ReadAllTextAsync(full), _appFont);
@@ -1228,6 +1109,7 @@ public sealed class MainWindow : Window
 				FilePath = full,
 				Kind = kind,
 				Document = flowDocument,
+				Zoom = zoom,
 				IsDirty = false
 			};
 			AddDocument(d, select: true);
@@ -1268,6 +1150,7 @@ public sealed class MainWindow : Window
 			switch (kind)
 			{
 			case DocumentKind.Native:
+				DocumentMetadata.SetZoom(d.Document, d.Zoom);
 				await File.WriteAllTextAsync(path, DocumentSerializer.ToXaml(d.Document), (Encoding)new UTF8Encoding(false));
 				break;
 			case DocumentKind.Markdown:
@@ -1337,10 +1220,11 @@ public sealed class MainWindow : Window
 
 	private void OnEditorChanged(object sender, TextChangedEventArgs e)
 	{
+		if (!_suppress)
+			_formatting.RestoreTypingStateIfDocumentEmpty();
+
 		if (!_suppress && _active != null)
 		{
-			Paragraph? paragraph = _editor.CaretPosition.Paragraph;
-			ScheduleDirectionReapply(paragraph);
 			_active.IsDirty = true;
 			_saveStatus.Text = "Unsaved";
 			UpdateTitle();
@@ -1361,6 +1245,9 @@ public sealed class MainWindow : Window
 
 	private void SaveSession()
 	{
+		foreach (DocumentTab document in _documents)
+			DocumentMetadata.SetZoom(document.Document, document.Zoom);
+
 		SessionService.Save(new SessionState
 		{
 			Theme = _themeName,
@@ -1381,7 +1268,7 @@ public sealed class MainWindow : Window
 
 	private void UpdateTitle()
 	{
-		_titleText.Text = ((_active == null) ? "GrassiNotes" : (_active.Title + " — GrassiNotes"));
+		_titleText.Text = AppVersion.WindowTitle(_active?.Title);
 		base.Title = _titleText.Text;
 	}
 
@@ -1458,97 +1345,46 @@ public sealed class MainWindow : Window
 
 	private void Execute(RoutedUICommand command)
 	{
-		command.Execute(null, _editor);
-		_editor.Focus();
+		_formatting.ExecuteInlineCommand(command);
 		UpdateFormatState();
 	}
 
 	private void ApplyHeading(int level)
 	{
-		foreach (Paragraph item in SelectedParagraphs())
-		{
-			TextRange paragraphRange = new TextRange(item.ContentStart, item.ContentEnd);
-			paragraphRange.ApplyPropertyValue(TextElement.FontFamilyProperty, _appFont);
-			if (level == 0)
-			{
-				item.Tag = null;
-				item.FontFamily = _appFont;
-				item.FontSize = 14.0;
-				item.FontWeight = FontWeights.Normal;
-				item.Margin = new Thickness(0.0, 0.0, 0.0, 8.0);
-			}
-			else
-			{
-				item.Tag = "h" + level;
-				item.FontFamily = _appFont;
-				MarkdownCodec.ApplyHeadingStyle(item, level);
-				item.Margin = level switch
-				{
-					1 => new Thickness(0.0, 16.0, 0.0, 8.0),
-					2 => new Thickness(0.0, 14.0, 0.0, 7.0),
-					_ => new Thickness(0.0, 11.0, 0.0, 6.0)
-				};
-			}
-		}
-		NormalizeDocumentFont(_editor.Document);
-		_editor.Focus();
+		_formatting.ApplyHeading(level);
 		UpdateFormatState();
-	}
-
-	private IEnumerable<Paragraph> SelectedParagraphs()
-	{
-		TextPointer start = _editor.Selection.Start;
-		TextPointer end = _editor.Selection.End;
-		foreach (Paragraph item in EnumerateParagraphs(_editor.Document.Blocks))
-		{
-			if (item.ContentEnd.CompareTo(start) >= 0 && item.ContentStart.CompareTo(end) <= 0)
-			{
-				yield return item;
-			}
-		}
-	}
-
-	private static IEnumerable<Paragraph> EnumerateParagraphs(BlockCollection blocks)
-	{
-		foreach (Block block in blocks)
-		{
-			if (block is Paragraph paragraph)
-			{
-				yield return paragraph;
-			}
-			else if (block is Section section)
-			{
-				foreach (Paragraph item in EnumerateParagraphs(section.Blocks))
-				{
-					yield return item;
-				}
-			}
-			else
-			{
-				if (!(block is List list))
-				{
-					continue;
-				}
-				foreach (ListItem listItem in list.ListItems)
-				{
-					foreach (Paragraph item2 in EnumerateParagraphs(listItem.Blocks))
-					{
-						yield return item2;
-					}
-				}
-			}
-		}
 	}
 
 	private void ChangeZoom(double delta)
 	{
 		if (_active != null)
 		{
-			_active.Zoom = Math.Clamp(_active.Zoom + delta, 0.6, 2.2);
-			_editor.FontSize = 15.0 * _active.Zoom;
-			UpdateStatus();
-			QueueAutosave();
+			SetZoom(_active.Zoom + delta);
 		}
+	}
+
+	private void SetZoom(double value)
+	{
+		if (_active == null) return;
+
+		double zoom = DocumentMetadata.NormalizeZoom(
+			Math.Clamp(value, 0.6, 2.2));
+		if (Math.Abs(_active.Zoom - zoom) < 0.001)
+			return;
+
+		_active.Zoom = zoom;
+		DocumentMetadata.SetZoom(_active.Document, zoom);
+		EditorZoom.Apply(_editor, zoom);
+
+		if (_active.Kind == DocumentKind.Native)
+		{
+			_active.IsDirty = true;
+			_saveStatus.Text = "Unsaved";
+		}
+
+		UpdateTitle();
+		UpdateStatus();
+		QueueAutosave();
 	}
 
 	private void CopyMarkdown()
@@ -1576,20 +1412,14 @@ public sealed class MainWindow : Window
 
 	private void OnPreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
 	{
+		if (_directionShortcut.OnKeyDown(e.Key, Keyboard.Modifiers, e.IsRepeat))
+		{
+			e.Handled = true;
+			return;
+		}
+
 		bool flag = (Keyboard.Modifiers & ModifierKeys.Control) != 0;
 		bool flag2 = (Keyboard.Modifiers & ModifierKeys.Shift) != 0;
-		if (flag && e.Key == Key.RightShift)
-		{
-			SetSelectionDirection(true);
-			e.Handled = true;
-			return;
-		}
-		if (flag && e.Key == Key.LeftShift)
-		{
-			SetSelectionDirection(false);
-			e.Handled = true;
-			return;
-		}
 		if (e.Key == Key.Escape)
 		{
 			if (_findPopup.IsOpen)
@@ -1618,6 +1448,18 @@ public sealed class MainWindow : Window
 			else if (e.Key == Key.U)
 			{
 				Execute(EditingCommands.ToggleUnderline);
+				e.Handled = true;
+			}
+			else if (!flag2 && e.Key == Key.R)
+			{
+				_formatting.ApplyVisualAlignment(TextAlignment.Right);
+				QueueAutosave();
+				e.Handled = true;
+			}
+			else if (!flag2 && e.Key == Key.L)
+			{
+				_formatting.ApplyVisualAlignment(TextAlignment.Left);
+				QueueAutosave();
 				e.Handled = true;
 			}
 			else if (flag2 && e.Key == Key.L)
@@ -1685,30 +1527,31 @@ public sealed class MainWindow : Window
 			}
 			else if (e.Key == Key.D0 || e.Key == Key.NumPad0)
 			{
-				if (_active != null)
-				{
-					_active.Zoom = 1.0;
-					_editor.FontSize = 15.0;
-					UpdateStatus();
-				}
+				SetZoom(1.0);
 				e.Handled = true;
 			}
 		}
 	}
 
-	private void EditorPreviewTextInput(object sender, TextCompositionEventArgs e)
+	private void OnPreviewKeyUp(object sender, System.Windows.Input.KeyEventArgs e)
 	{
-		Paragraph? paragraph = _editor.CaretPosition.Paragraph;
-		if (paragraph == null) return;
-		string explicitDirection = EditorMetadata.GetExplicitDirection(paragraph);
-		if (explicitDirection == "RTL" || explicitDirection == "LTR")
-			ScheduleDirectionReapply(paragraph, explicitDirection, true);
-		else
-			ScheduleDirectionReapply(paragraph);
+		DirectionShortcutKeyUpResult result =
+			_directionShortcut.OnKeyUp(e.Key, Keyboard.Modifiers);
+		if (!result.Handled) return;
+
+		if (result.Direction is ParagraphDirection direction)
+		{
+			_formatting.ApplyDirection(direction);
+			QueueAutosave();
+		}
+
+		e.Handled = true;
 	}
 
 	private void EditorPreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
 	{
+		_formatting.RememberTypingState();
+
 		if (e.Key == Key.Tab && _editor.CaretPosition.Paragraph?.Parent is ListItem)
 		{
 			Execute(((Keyboard.Modifiers & ModifierKeys.Shift) != 0) ? EditingCommands.DecreaseIndentation : EditingCommands.IncreaseIndentation);
@@ -1718,22 +1561,9 @@ public sealed class MainWindow : Window
 
 		if (e.Key == Key.Enter || e.Key == Key.Return)
 		{
-			Paragraph? before = _editor.CaretPosition.Paragraph;
-			if (before == null) return;
-			string explicitDirection = EditorMetadata.GetExplicitDirection(before);
-			string effectiveDirection = EffectiveDirection(before);
-			base.Dispatcher.BeginInvoke((Action)delegate
-			{
-				Paragraph? after = _editor.CaretPosition.Paragraph;
-				if (after == null) return;
-				_suppress = true;
-				try
-				{
-					ApplyParagraphDirection(after, effectiveDirection == "RTL", explicitDirection != "Auto");
-					if (explicitDirection != "Auto") EditorMetadata.SetExplicitDirection(after, explicitDirection);
-				}
-				finally { _suppress = false; }
-			}, DispatcherPriority.ContextIdle);
+			_formatting.InsertParagraphBreak();
+			UpdateFormatState();
+			e.Handled = true;
 		}
 	}
 
@@ -1841,6 +1671,7 @@ public sealed class MainWindow : Window
 		_editor.Foreground = _theme.Text;
 		_editor.CaretBrush = _theme.Caret;
 		_editor.SelectionBrush = _theme.Selection;
+		_headerLogo.Fill = HeaderLogo.BrushFor(name);
 		_titleText.Foreground = _theme.Text;
 		foreach (TextBlock status in new[] { _saveStatus, _positionStatus, _wordsStatus, _formatStatus, _zoomStatus, _findCount })
 			status.Foreground = _theme.Muted;
@@ -1897,6 +1728,9 @@ public sealed class MainWindow : Window
 		foreach (DocumentTab document in _documents)
 		{
 			document.Document.Foreground = _theme.Text;
+			EditorFormattingController.RefreshAutomaticTextColors(
+				document.Document,
+				_theme.Text);
 			NormalizeDocumentFont(document.Document);
 		}
 		ApplyScrollBarStyle(_editor);
@@ -2135,6 +1969,23 @@ public sealed class MainWindow : Window
 		{
 			_maximizeButton.Content = Glyph((base.WindowState == WindowState.Maximized) ? "\ue923" : "\ue922", 13.0);
 		}
+	}
+
+	private void UpdateWindowCorners()
+	{
+		if (_outer == null || _outer.ActualWidth <= 0.0 || _outer.ActualHeight <= 0.0)
+			return;
+
+		double radius = base.WindowState == WindowState.Maximized ? 0.0 : 9.0;
+		_outer.CornerRadius = new CornerRadius(radius);
+		_outer.Clip = new RectangleGeometry(
+			new Rect(0.0, 0.0, _outer.ActualWidth, _outer.ActualHeight),
+			radius,
+			radius);
+
+		WindowChrome? chrome = WindowChrome.GetWindowChrome(this);
+		if (chrome != null)
+			chrome.CornerRadius = new CornerRadius(radius);
 	}
 
 	[DllImport("user32.dll", SetLastError = true)]
