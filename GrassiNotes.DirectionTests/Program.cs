@@ -15,8 +15,9 @@ internal static class Program
 		{
 			ShortcutFormattingSetsBothProperties();
 			FlowDirectionForcesAlignmentAfterEveryChange();
-			TypingFlowSynchronizesTheParagraph();
+			ExplicitDirectionSurvivesParagraphReplacement();
 			EnterFormattingInheritsBothProperties();
+			HeadingEnterCreatesNormalParagraph();
 			ListFormattingStaysAligned();
 			Console.WriteLine("RTL/LTR direction regression tests passed.");
 			return 0;
@@ -28,48 +29,57 @@ internal static class Program
 		}
 	}
 
-	private static void TypingFlowSynchronizesTheParagraph()
+	private static void ExplicitDirectionSurvivesParagraphReplacement()
 	{
-		Paragraph paragraph = new Paragraph(new Run("text"))
+		Paragraph originalParagraph = new Paragraph(new Run("متن"));
+		ParagraphDirectionFormatter.Apply(
+			originalParagraph,
+			FlowDirection.RightToLeft,
+			TextAlignment.Right,
+			"RTL");
+		string explicitDirection = EditorMetadata.GetExplicitDirection(originalParagraph);
+
+		Paragraph replacementParagraph = new Paragraph(new Run("new text"))
 		{
 			FlowDirection = FlowDirection.LeftToRight,
 			TextAlignment = TextAlignment.Left
 		};
-		RichTextBox editor = new RichTextBox
+		ParagraphDirectionFormatter.EnforceDirectionAndAlignment(
+			replacementParagraph,
+			explicitDirection);
+		AssertFormatting(replacementParagraph, FlowDirection.RightToLeft, TextAlignment.Right, "RTL");
+
+		replacementParagraph.TextAlignment = TextAlignment.Left;
+		replacementParagraph.Inlines.Add(new Run(" changed"));
+		ParagraphDirectionFormatter.EnforceDirectionAndAlignment(replacementParagraph);
+		AssertFormatting(replacementParagraph, FlowDirection.RightToLeft, TextAlignment.Right, "RTL");
+	}
+
+	private static void HeadingEnterCreatesNormalParagraph()
+	{
+		System.Windows.Media.FontFamily fontFamily = new System.Windows.Media.FontFamily("Segoe UI");
+		Paragraph heading = new Paragraph(new Run("Heading"))
 		{
-			Document = new FlowDocument(paragraph)
+			Tag = "h2",
+			FontFamily = fontFamily,
+			FontSize = 22.0,
+			FontWeight = FontWeights.Bold
 		};
-		editor.CaretPosition = paragraph.ContentEnd;
-		editor.Selection.ApplyPropertyValue(
-			FrameworkElement.FlowDirectionProperty,
-			FlowDirection.RightToLeft);
-		object typingFlowDirection = editor.Selection.GetPropertyValue(
-			FrameworkElement.FlowDirectionProperty);
-		AssertEqual(
-			FlowDirection.RightToLeft,
-			(FlowDirection)typingFlowDirection,
-			"RTL typing flow read from the RichTextBox selection");
+		AssertEqual(true, ParagraphStyleFormatter.IsHeading(heading), "heading detection");
 
-		ParagraphDirectionFormatter.SynchronizeWithTypingFlow(
-			paragraph,
-			typingFlowDirection);
-		AssertEqual(FlowDirection.RightToLeft, paragraph.FlowDirection, "paragraph flow synchronized from typing flow");
-		AssertEqual(TextAlignment.Right, paragraph.TextAlignment, "paragraph alignment synchronized from typing flow");
+		Paragraph newParagraph = new Paragraph
+		{
+			Tag = heading.Tag,
+			FontFamily = heading.FontFamily,
+			FontSize = heading.FontSize,
+			FontWeight = heading.FontWeight
+		};
+		ParagraphStyleFormatter.ApplyNormal(newParagraph, fontFamily);
 
-		paragraph.TextAlignment = TextAlignment.Left;
-		paragraph.Inlines.Add(new Run(" more"));
-		ParagraphDirectionFormatter.SynchronizeWithTypingFlow(
-			paragraph,
-			FlowDirection.RightToLeft);
-		AssertEqual(TextAlignment.Right, paragraph.TextAlignment, "typing flow restores RTL alignment after a change");
-
-		EditorMetadata.SetExplicitDirection(paragraph, "RTL");
-		ParagraphDirectionFormatter.SynchronizeWithTypingFlow(
-			paragraph,
-			FlowDirection.LeftToRight);
-		AssertEqual(FlowDirection.RightToLeft, paragraph.FlowDirection, "explicit RTL overrides stale typing flow");
-		AssertEqual(TextAlignment.Right, paragraph.TextAlignment, "explicit RTL keeps right alignment");
-		GC.KeepAlive(editor);
+		AssertEqual(false, ParagraphStyleFormatter.IsHeading(newParagraph), "new paragraph heading reset");
+		AssertNull(newParagraph.Tag, "new paragraph tag");
+		AssertEqual(14.0, newParagraph.FontSize, "new paragraph font size");
+		AssertEqual(FontWeights.Normal, newParagraph.FontWeight, "new paragraph font weight");
 	}
 
 	private static void FlowDirectionForcesAlignmentAfterEveryChange()
@@ -226,5 +236,11 @@ internal static class Program
 	{
 		if (!EqualityComparer<T>.Default.Equals(expected, actual))
 			throw new InvalidOperationException($"{name}: expected {expected}, got {actual}.");
+	}
+
+	private static void AssertNull(object? actual, string name)
+	{
+		if (actual != null)
+			throw new InvalidOperationException($"{name}: expected null, got {actual}.");
 	}
 }

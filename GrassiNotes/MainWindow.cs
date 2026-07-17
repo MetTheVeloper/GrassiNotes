@@ -178,7 +178,8 @@ public sealed class MainWindow : Window
 			UseAeroCaptionButtons = false
 		});
 		BuildUi();
-		base.PreviewKeyDown += OnPreviewKeyDown;
+		base.AddHandler(Keyboard.PreviewKeyDownEvent, new KeyEventHandler(OnPreviewKeyDown), true);
+		base.AddHandler(Keyboard.PreviewKeyUpEvent, new KeyEventHandler(OnPreviewKeyUp), true);
 		base.Closing += OnClosing;
 		base.SourceInitialized += OnSourceInitialized;
 		base.Drop += OnDrop;
@@ -1306,7 +1307,7 @@ public sealed class MainWindow : Window
 			Paragraph? paragraph = _editor.CaretPosition.Paragraph;
 			string? pendingTypingDirection = _pendingTypingDirection;
 			_pendingTypingDirection = null;
-			EnforceAlignmentAfterChange(paragraph, pendingTypingDirection);
+			EnforceDirectionAfterChange(paragraph, pendingTypingDirection);
 			ScheduleDirectionReapply(paragraph);
 			_active.IsDirty = true;
 			_saveStatus.Text = "Unsaved";
@@ -1320,18 +1321,16 @@ public sealed class MainWindow : Window
 		}
 	}
 
-	private void EnforceAlignmentAfterChange(Paragraph? paragraph, string? forcedDirection)
+	private void EnforceDirectionAfterChange(Paragraph? paragraph, string? forcedDirection)
 	{
 		if (paragraph == null) return;
 
-		object typingFlowDirection = GetTypingFlowDirection();
 		bool previousSuppress = _suppress;
 		_suppress = true;
 		try
 		{
-			ParagraphDirectionFormatter.SynchronizeWithTypingFlow(
+			ParagraphDirectionFormatter.EnforceDirectionAndAlignment(
 				paragraph,
-				typingFlowDirection,
 				forcedDirection);
 		}
 		finally
@@ -1359,12 +1358,7 @@ public sealed class MainWindow : Window
 				_suppress = true;
 				try
 				{
-					object currentTypingFlow = ReferenceEquals(target, _editor.CaretPosition.Paragraph)
-						? GetTypingFlowDirection()
-						: DependencyProperty.UnsetValue;
-					ParagraphDirectionFormatter.SynchronizeWithTypingFlow(
-						target,
-						currentTypingFlow);
+					ParagraphDirectionFormatter.EnforceDirectionAndAlignment(target);
 				}
 				finally
 				{
@@ -1372,18 +1366,6 @@ public sealed class MainWindow : Window
 				}
 			}
 		}, DispatcherPriority.ContextIdle);
-	}
-
-	private object GetTypingFlowDirection()
-	{
-		try
-		{
-			return _editor.Selection.GetPropertyValue(FrameworkElement.FlowDirectionProperty);
-		}
-		catch
-		{
-			return DependencyProperty.UnsetValue;
-		}
 	}
 
 	private void QueueAutosave()
@@ -1611,22 +1593,8 @@ public sealed class MainWindow : Window
 	{
 		bool flag = (Keyboard.Modifiers & ModifierKeys.Control) != 0;
 		bool flag2 = (Keyboard.Modifiers & ModifierKeys.Shift) != 0;
-		Key pressedKey = e.Key switch
+		if (TryHandleDirectionShortcut(e))
 		{
-			Key.System => e.SystemKey,
-			Key.ImeProcessed => e.ImeProcessedKey,
-			_ => e.Key
-		};
-		if (flag && (pressedKey == Key.RightShift || Keyboard.IsKeyDown(Key.RightShift)))
-		{
-			SetSelectionDirection(true);
-			e.Handled = true;
-			return;
-		}
-		if (flag && (pressedKey == Key.LeftShift || Keyboard.IsKeyDown(Key.LeftShift)))
-		{
-			SetSelectionDirection(false);
-			e.Handled = true;
 			return;
 		}
 		if (e.Key == Key.Escape)
@@ -1752,6 +1720,30 @@ public sealed class MainWindow : Window
 		}
 	}
 
+	private void OnPreviewKeyUp(object sender, System.Windows.Input.KeyEventArgs e)
+	{
+		TryHandleDirectionShortcut(e);
+	}
+
+	private bool TryHandleDirectionShortcut(System.Windows.Input.KeyEventArgs e)
+	{
+		if ((Keyboard.Modifiers & ModifierKeys.Control) == 0) return false;
+
+		Key pressedKey = e.Key switch
+		{
+			Key.System => e.SystemKey,
+			Key.ImeProcessed => e.ImeProcessedKey,
+			_ => e.Key
+		};
+		if (pressedKey != Key.RightShift && pressedKey != Key.LeftShift) return false;
+
+		bool rtl = Keyboard.IsKeyDown(Key.RightShift) ||
+			(pressedKey == Key.RightShift && !Keyboard.IsKeyDown(Key.LeftShift));
+		SetSelectionDirection(rtl);
+		e.Handled = true;
+		return true;
+	}
+
 	private void EditorPreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
 	{
 		if (e.Key == Key.Tab && _editor.CaretPosition.Paragraph?.Parent is ListItem)
@@ -1765,6 +1757,7 @@ public sealed class MainWindow : Window
 		{
 			Paragraph? before = _editor.CaretPosition.Paragraph;
 			if (before == null) return;
+			bool resetHeading = ParagraphStyleFormatter.IsHeading(before);
 			string explicitDirection = EditorMetadata.GetExplicitDirection(before);
 			System.Windows.FlowDirection inheritedFlowDirection = before.FlowDirection;
 			TextAlignment inheritedTextAlignment = before.TextAlignment;
@@ -1775,6 +1768,14 @@ public sealed class MainWindow : Window
 				_suppress = true;
 				try
 				{
+					if (resetHeading)
+					{
+						ParagraphStyleFormatter.ApplyNormal(after, _appFont);
+						_editor.Selection.ApplyPropertyValue(TextElement.FontFamilyProperty, _appFont);
+						_editor.Selection.ApplyPropertyValue(TextElement.FontSizeProperty, 14.0);
+						_editor.Selection.ApplyPropertyValue(TextElement.FontWeightProperty, FontWeights.Normal);
+						_editor.Selection.ApplyPropertyValue(TextElement.FontStyleProperty, FontStyles.Normal);
+					}
 					ParagraphDirectionFormatter.Apply(
 						after,
 						inheritedFlowDirection,
@@ -1782,6 +1783,7 @@ public sealed class MainWindow : Window
 						explicitDirection != "Auto" ? explicitDirection : null);
 				}
 				finally { _suppress = false; }
+				UpdateFormatState();
 			}, DispatcherPriority.Input);
 		}
 	}

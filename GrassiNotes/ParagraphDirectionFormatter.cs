@@ -50,9 +50,8 @@ internal static class ParagraphDirectionFormatter
 		}
 	}
 
-	public static void SynchronizeWithTypingFlow(
+	public static void EnforceDirectionAndAlignment(
 		Paragraph paragraph,
-		object typingFlowDirection,
 		string? forcedDirection = null)
 	{
 		string explicitDirection = forcedDirection ?? EditorMetadata.GetExplicitDirection(paragraph);
@@ -62,8 +61,6 @@ internal static class ParagraphDirectionFormatter
 			flowDirection = FlowDirection.RightToLeft;
 		else if (explicitDirection == "LTR")
 			flowDirection = FlowDirection.LeftToRight;
-		else if (typingFlowDirection is FlowDirection currentTypingFlow)
-			flowDirection = currentTypingFlow;
 		else
 			flowDirection = paragraph.FlowDirection;
 

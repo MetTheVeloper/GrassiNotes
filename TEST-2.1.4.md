@@ -8,3 +8,4 @@
 6. Open Text Color, hover every swatch in Dark and Light themes. The swatch fill must never disappear or turn into the menu hover color.
 7. Save as `.grass`, close the tab, reopen, and repeat typing/Enter in the RTL list.
 8. With an RTL paragraph selected, press `Ctrl+R`, type another character, and confirm the paragraph remains right aligned.
+9. Apply Heading 1 through Heading 4, press Enter after each one, and confirm the new line uses Normal style.
