@@ -19,7 +19,7 @@ internal static class ParagraphDirectionFormatter
 		if (list == null) return;
 
 		list.SetCurrentValue(FrameworkElement.FlowDirectionProperty, flowDirection);
-		list.SetCurrentValue(Block.TextAlignmentProperty, textAlignment);
+		ForceTextAlignment(list, textAlignment);
 		list.MarkerOffset = 18.0;
 		if (explicitDirection != null)
 			EditorMetadata.SetExplicitDirection(list, explicitDirection);
@@ -35,6 +35,21 @@ internal static class ParagraphDirectionFormatter
 		}
 	}
 
+	public static void EnforceAlignmentFromFlowDirection(Paragraph paragraph)
+	{
+		ForceTextAlignment(paragraph, AlignmentFor(paragraph.FlowDirection));
+
+		List? list = FindOwningList(paragraph);
+		if (list == null) return;
+
+		ForceTextAlignment(list, AlignmentFor(list.FlowDirection));
+		foreach (ListItem item in list.ListItems)
+		{
+			foreach (Paragraph child in EnumerateParagraphs(item.Blocks))
+				ForceTextAlignment(child, AlignmentFor(child.FlowDirection));
+		}
+	}
+
 	private static void ApplyToParagraph(
 		Paragraph paragraph,
 		FlowDirection flowDirection,
@@ -42,9 +57,19 @@ internal static class ParagraphDirectionFormatter
 		string? explicitDirection)
 	{
 		paragraph.SetCurrentValue(FrameworkElement.FlowDirectionProperty, flowDirection);
-		paragraph.SetCurrentValue(Block.TextAlignmentProperty, textAlignment);
+		ForceTextAlignment(paragraph, textAlignment);
 		if (explicitDirection != null)
 			EditorMetadata.SetExplicitDirection(paragraph, explicitDirection);
+	}
+
+	private static TextAlignment AlignmentFor(FlowDirection flowDirection) =>
+		flowDirection == FlowDirection.RightToLeft ? TextAlignment.Right : TextAlignment.Left;
+
+	private static void ForceTextAlignment(Block block, TextAlignment textAlignment)
+	{
+		object localValue = block.ReadLocalValue(Block.TextAlignmentProperty);
+		if (!Equals(localValue, textAlignment))
+			block.SetValue(Block.TextAlignmentProperty, textAlignment);
 	}
 
 	private static List? FindOwningList(Paragraph paragraph)

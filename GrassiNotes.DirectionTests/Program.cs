@@ -14,6 +14,7 @@ internal static class Program
 		try
 		{
 			ShortcutFormattingSetsBothProperties();
+			FlowDirectionForcesAlignmentAfterEveryChange();
 			EnterFormattingInheritsBothProperties();
 			ListFormattingStaysAligned();
 			Console.WriteLine("RTL/LTR direction regression tests passed.");
@@ -24,6 +25,59 @@ internal static class Program
 			Console.Error.WriteLine(exception);
 			return 1;
 		}
+	}
+
+	private static void FlowDirectionForcesAlignmentAfterEveryChange()
+	{
+		Paragraph rtlParagraph = new Paragraph(new Run("متن"))
+		{
+			FlowDirection = FlowDirection.RightToLeft,
+			TextAlignment = TextAlignment.Left
+		};
+		ParagraphDirectionFormatter.EnforceAlignmentFromFlowDirection(rtlParagraph);
+		AssertEqual(TextAlignment.Right, rtlParagraph.TextAlignment, "forced RTL alignment");
+		AssertEqual(
+			TextAlignment.Right,
+			(TextAlignment)rtlParagraph.ReadLocalValue(Block.TextAlignmentProperty),
+			"local RTL alignment");
+
+		rtlParagraph.Inlines.Add(new Run(" جدید"));
+		rtlParagraph.TextAlignment = TextAlignment.Left;
+		ParagraphDirectionFormatter.EnforceAlignmentFromFlowDirection(rtlParagraph);
+		AssertEqual(TextAlignment.Right, rtlParagraph.TextAlignment, "forced RTL alignment after typing");
+
+		Paragraph ltrParagraph = new Paragraph(new Run("text"))
+		{
+			FlowDirection = FlowDirection.LeftToRight,
+			TextAlignment = TextAlignment.Right
+		};
+		ParagraphDirectionFormatter.EnforceAlignmentFromFlowDirection(ltrParagraph);
+		AssertEqual(TextAlignment.Left, ltrParagraph.TextAlignment, "forced LTR alignment");
+
+		Paragraph firstListParagraph = new Paragraph(new Run("یک"))
+		{
+			FlowDirection = FlowDirection.RightToLeft,
+			TextAlignment = TextAlignment.Left
+		};
+		Paragraph secondListParagraph = new Paragraph(new Run("دو"))
+		{
+			FlowDirection = FlowDirection.RightToLeft,
+			TextAlignment = TextAlignment.Left
+		};
+		List rtlList = new List
+		{
+			FlowDirection = FlowDirection.RightToLeft,
+			TextAlignment = TextAlignment.Left
+		};
+		rtlList.ListItems.Add(new ListItem(firstListParagraph));
+		rtlList.ListItems.Add(new ListItem(secondListParagraph));
+		FlowDocument listDocument = new FlowDocument(rtlList);
+
+		ParagraphDirectionFormatter.EnforceAlignmentFromFlowDirection(firstListParagraph);
+		AssertEqual(TextAlignment.Right, rtlList.TextAlignment, "forced RTL list alignment");
+		AssertEqual(TextAlignment.Right, firstListParagraph.TextAlignment, "forced first RTL list paragraph alignment");
+		AssertEqual(TextAlignment.Right, secondListParagraph.TextAlignment, "forced second RTL list paragraph alignment");
+		GC.KeepAlive(listDocument);
 	}
 
 	private static void ShortcutFormattingSetsBothProperties()

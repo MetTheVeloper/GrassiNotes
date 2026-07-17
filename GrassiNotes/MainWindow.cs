@@ -37,6 +37,10 @@ public sealed class MainWindow : Window
 
 	private bool _suppress;
 
+	private readonly HashSet<Paragraph> _pendingAlignmentParagraphs = new HashSet<Paragraph>();
+
+	private DispatcherOperation? _alignmentEnforcementOperation;
+
 	private bool _exitRequested;
 
 	private string _themeName = "Dark";
@@ -1297,6 +1301,7 @@ public sealed class MainWindow : Window
 		if (!_suppress && _active != null)
 		{
 			Paragraph? paragraph = _editor.CaretPosition.Paragraph;
+			EnforceAlignmentAfterChange(paragraph);
 			ScheduleDirectionReapply(paragraph);
 			_active.IsDirty = true;
 			_saveStatus.Text = "Unsaved";
@@ -1308,6 +1313,51 @@ public sealed class MainWindow : Window
 				RefreshFind();
 			}
 		}
+	}
+
+	private void EnforceAlignmentAfterChange(Paragraph? paragraph)
+	{
+		if (paragraph == null) return;
+
+		bool previousSuppress = _suppress;
+		_suppress = true;
+		try
+		{
+			ParagraphDirectionFormatter.EnforceAlignmentFromFlowDirection(paragraph);
+		}
+		finally
+		{
+			_suppress = previousSuppress;
+		}
+
+		_pendingAlignmentParagraphs.Add(paragraph);
+		if (_alignmentEnforcementOperation != null) return;
+
+		_alignmentEnforcementOperation = base.Dispatcher.BeginInvoke((Action)delegate
+		{
+			Paragraph[] pendingParagraphs = _pendingAlignmentParagraphs.ToArray();
+			_pendingAlignmentParagraphs.Clear();
+			_alignmentEnforcementOperation = null;
+
+			foreach (Paragraph pendingParagraph in pendingParagraphs)
+			{
+				Paragraph? target = pendingParagraph.Parent == null
+					? _editor.CaretPosition.Paragraph
+					: pendingParagraph;
+				if (target == null) continue;
+
+				bool wasSuppressed = _suppress;
+				_suppress = true;
+				try
+				{
+					ParagraphDirectionFormatter.EnforceAlignmentFromFlowDirection(target);
+				}
+				finally
+				{
+					_suppress = wasSuppressed;
+				}
+			}
+		}, DispatcherPriority.ContextIdle);
 	}
 
 	private void QueueAutosave()
