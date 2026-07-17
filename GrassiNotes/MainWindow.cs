@@ -41,6 +41,8 @@ public sealed class MainWindow : Window
 
 	private DispatcherOperation? _alignmentEnforcementOperation;
 
+	private string? _pendingTypingDirection;
+
 	private bool _exitRequested;
 
 	private string _themeName = "Dark";
@@ -1037,6 +1039,7 @@ public sealed class MainWindow : Window
 			foreach (Paragraph paragraph in paragraphs) ApplyParagraphDirection(paragraph, rtl, true);
 		}
 		finally { _suppress = false; }
+		_pendingTypingDirection = rtl ? "RTL" : "LTR";
 		_editor.Focus();
 		QueueAutosave();
 	}
@@ -1301,7 +1304,9 @@ public sealed class MainWindow : Window
 		if (!_suppress && _active != null)
 		{
 			Paragraph? paragraph = _editor.CaretPosition.Paragraph;
-			EnforceAlignmentAfterChange(paragraph);
+			string? pendingTypingDirection = _pendingTypingDirection;
+			_pendingTypingDirection = null;
+			EnforceAlignmentAfterChange(paragraph, pendingTypingDirection);
 			ScheduleDirectionReapply(paragraph);
 			_active.IsDirty = true;
 			_saveStatus.Text = "Unsaved";
@@ -1315,15 +1320,19 @@ public sealed class MainWindow : Window
 		}
 	}
 
-	private void EnforceAlignmentAfterChange(Paragraph? paragraph)
+	private void EnforceAlignmentAfterChange(Paragraph? paragraph, string? forcedDirection)
 	{
 		if (paragraph == null) return;
 
+		object typingFlowDirection = GetTypingFlowDirection();
 		bool previousSuppress = _suppress;
 		_suppress = true;
 		try
 		{
-			ParagraphDirectionFormatter.EnforceAlignmentFromFlowDirection(paragraph);
+			ParagraphDirectionFormatter.SynchronizeWithTypingFlow(
+				paragraph,
+				typingFlowDirection,
+				forcedDirection);
 		}
 		finally
 		{
@@ -1350,7 +1359,12 @@ public sealed class MainWindow : Window
 				_suppress = true;
 				try
 				{
-					ParagraphDirectionFormatter.EnforceAlignmentFromFlowDirection(target);
+					object currentTypingFlow = ReferenceEquals(target, _editor.CaretPosition.Paragraph)
+						? GetTypingFlowDirection()
+						: DependencyProperty.UnsetValue;
+					ParagraphDirectionFormatter.SynchronizeWithTypingFlow(
+						target,
+						currentTypingFlow);
 				}
 				finally
 				{
@@ -1358,6 +1372,18 @@ public sealed class MainWindow : Window
 				}
 			}
 		}, DispatcherPriority.ContextIdle);
+	}
+
+	private object GetTypingFlowDirection()
+	{
+		try
+		{
+			return _editor.Selection.GetPropertyValue(FrameworkElement.FlowDirectionProperty);
+		}
+		catch
+		{
+			return DependencyProperty.UnsetValue;
+		}
 	}
 
 	private void QueueAutosave()
@@ -1585,13 +1611,19 @@ public sealed class MainWindow : Window
 	{
 		bool flag = (Keyboard.Modifiers & ModifierKeys.Control) != 0;
 		bool flag2 = (Keyboard.Modifiers & ModifierKeys.Shift) != 0;
-		if (flag && e.Key == Key.RightShift)
+		Key pressedKey = e.Key switch
+		{
+			Key.System => e.SystemKey,
+			Key.ImeProcessed => e.ImeProcessedKey,
+			_ => e.Key
+		};
+		if (flag && (pressedKey == Key.RightShift || Keyboard.IsKeyDown(Key.RightShift)))
 		{
 			SetSelectionDirection(true);
 			e.Handled = true;
 			return;
 		}
-		if (flag && e.Key == Key.LeftShift)
+		if (flag && (pressedKey == Key.LeftShift || Keyboard.IsKeyDown(Key.LeftShift)))
 		{
 			SetSelectionDirection(false);
 			e.Handled = true;
@@ -1709,9 +1741,15 @@ public sealed class MainWindow : Window
 		if (paragraph == null) return;
 		string explicitDirection = EditorMetadata.GetExplicitDirection(paragraph);
 		if (explicitDirection == "RTL" || explicitDirection == "LTR")
+		{
+			_pendingTypingDirection = explicitDirection;
 			ScheduleDirectionReapply(paragraph, explicitDirection, true);
+		}
 		else
+		{
+			_pendingTypingDirection = null;
 			ScheduleDirectionReapply(paragraph);
+		}
 	}
 
 	private void EditorPreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)

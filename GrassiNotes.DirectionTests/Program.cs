@@ -15,6 +15,7 @@ internal static class Program
 		{
 			ShortcutFormattingSetsBothProperties();
 			FlowDirectionForcesAlignmentAfterEveryChange();
+			TypingFlowSynchronizesTheParagraph();
 			EnterFormattingInheritsBothProperties();
 			ListFormattingStaysAligned();
 			Console.WriteLine("RTL/LTR direction regression tests passed.");
@@ -25,6 +26,50 @@ internal static class Program
 			Console.Error.WriteLine(exception);
 			return 1;
 		}
+	}
+
+	private static void TypingFlowSynchronizesTheParagraph()
+	{
+		Paragraph paragraph = new Paragraph(new Run("text"))
+		{
+			FlowDirection = FlowDirection.LeftToRight,
+			TextAlignment = TextAlignment.Left
+		};
+		RichTextBox editor = new RichTextBox
+		{
+			Document = new FlowDocument(paragraph)
+		};
+		editor.CaretPosition = paragraph.ContentEnd;
+		editor.Selection.ApplyPropertyValue(
+			FrameworkElement.FlowDirectionProperty,
+			FlowDirection.RightToLeft);
+		object typingFlowDirection = editor.Selection.GetPropertyValue(
+			FrameworkElement.FlowDirectionProperty);
+		AssertEqual(
+			FlowDirection.RightToLeft,
+			(FlowDirection)typingFlowDirection,
+			"RTL typing flow read from the RichTextBox selection");
+
+		ParagraphDirectionFormatter.SynchronizeWithTypingFlow(
+			paragraph,
+			typingFlowDirection);
+		AssertEqual(FlowDirection.RightToLeft, paragraph.FlowDirection, "paragraph flow synchronized from typing flow");
+		AssertEqual(TextAlignment.Right, paragraph.TextAlignment, "paragraph alignment synchronized from typing flow");
+
+		paragraph.TextAlignment = TextAlignment.Left;
+		paragraph.Inlines.Add(new Run(" more"));
+		ParagraphDirectionFormatter.SynchronizeWithTypingFlow(
+			paragraph,
+			FlowDirection.RightToLeft);
+		AssertEqual(TextAlignment.Right, paragraph.TextAlignment, "typing flow restores RTL alignment after a change");
+
+		EditorMetadata.SetExplicitDirection(paragraph, "RTL");
+		ParagraphDirectionFormatter.SynchronizeWithTypingFlow(
+			paragraph,
+			FlowDirection.LeftToRight);
+		AssertEqual(FlowDirection.RightToLeft, paragraph.FlowDirection, "explicit RTL overrides stale typing flow");
+		AssertEqual(TextAlignment.Right, paragraph.TextAlignment, "explicit RTL keeps right alignment");
+		GC.KeepAlive(editor);
 	}
 
 	private static void FlowDirectionForcesAlignmentAfterEveryChange()

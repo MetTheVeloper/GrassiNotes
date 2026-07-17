@@ -50,6 +50,30 @@ internal static class ParagraphDirectionFormatter
 		}
 	}
 
+	public static void SynchronizeWithTypingFlow(
+		Paragraph paragraph,
+		object typingFlowDirection,
+		string? forcedDirection = null)
+	{
+		string explicitDirection = forcedDirection ?? EditorMetadata.GetExplicitDirection(paragraph);
+		FlowDirection flowDirection;
+
+		if (explicitDirection == "RTL")
+			flowDirection = FlowDirection.RightToLeft;
+		else if (explicitDirection == "LTR")
+			flowDirection = FlowDirection.LeftToRight;
+		else if (typingFlowDirection is FlowDirection currentTypingFlow)
+			flowDirection = currentTypingFlow;
+		else
+			flowDirection = paragraph.FlowDirection;
+
+		Apply(
+			paragraph,
+			flowDirection,
+			AlignmentFor(flowDirection),
+			explicitDirection == "RTL" || explicitDirection == "LTR" ? explicitDirection : null);
+	}
+
 	private static void ApplyToParagraph(
 		Paragraph paragraph,
 		FlowDirection flowDirection,

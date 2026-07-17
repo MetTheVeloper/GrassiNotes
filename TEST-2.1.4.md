@@ -1,4 +1,4 @@
-# GrassiNotes 2.1.3 — focused regression test
+# GrassiNotes 2.1.4 — focused regression test
 
 1. Create a normal paragraph, press `Ctrl + Right Shift`, type Persian, press Enter, and type again. Both paragraphs must remain RTL and right aligned.
 2. In RTL mode enable Numbering. Marker and text must both remain on the right after typing and Enter.
