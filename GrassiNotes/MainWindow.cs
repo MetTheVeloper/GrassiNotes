@@ -390,7 +390,12 @@ public sealed class MainWindow : Window
 		Grid.SetRow(_editor, 4);
 		_root.Children.Add(_editor);
 		_editor.TextChanged += OnEditorChanged;
-		_editor.SelectionChanged += delegate { UpdateStatus(); UpdateFormatState(); };
+		_editor.SelectionChanged += delegate
+		{
+			_formatting.RememberTypingState();
+			UpdateStatus();
+			UpdateFormatState();
+		};
 		_editor.PreviewMouseRightButtonUp += delegate(object _, MouseButtonEventArgs e) { OpenEditorContext(); e.Handled = true; };
 		_editor.PreviewMouseWheel += delegate(object _, MouseWheelEventArgs e)
 		{
@@ -1215,6 +1220,9 @@ public sealed class MainWindow : Window
 
 	private void OnEditorChanged(object sender, TextChangedEventArgs e)
 	{
+		if (!_suppress)
+			_formatting.RestoreTypingStateIfDocumentEmpty();
+
 		if (!_suppress && _active != null)
 		{
 			_active.IsDirty = true;
@@ -1542,6 +1550,8 @@ public sealed class MainWindow : Window
 
 	private void EditorPreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
 	{
+		_formatting.RememberTypingState();
+
 		if (e.Key == Key.Tab && _editor.CaretPosition.Paragraph?.Parent is ListItem)
 		{
 			Execute(((Keyboard.Modifiers & ModifierKeys.Shift) != 0) ? EditingCommands.DecreaseIndentation : EditingCommands.IncreaseIndentation);

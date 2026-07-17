@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Windows.Input;
 
 namespace GrassiNotes;
@@ -8,32 +9,30 @@ internal readonly record struct DirectionShortcutKeyUpResult(
 
 internal sealed class DirectionShortcutGesture
 {
-	private Key? _armedShift;
+	private readonly HashSet<Key> _pressedControlKeys = new();
+	private readonly HashSet<Key> _pressedShiftKeys = new();
+	private Key? _directionShift;
+	private bool _armed;
 	private bool _cancelled;
 
 	public bool OnKeyDown(Key key, ModifierKeys modifiers, bool isRepeat = false)
 	{
-		if (_armedShift is Key armed)
+		if (key is Key.LeftCtrl or Key.RightCtrl)
 		{
-			if (key == armed)
-				return true;
+			_pressedControlKeys.Add(key);
+			TryArm(modifiers);
+			return _armed;
+		}
 
-			if (key is Key.LeftCtrl or Key.RightCtrl)
-				return false;
+		if (key is Key.LeftShift or Key.RightShift)
+		{
+			_pressedShiftKeys.Add(key);
+			TryArm(modifiers);
+			return _armed;
+		}
 
+		if (_armed && !isRepeat)
 			_cancelled = true;
-			return false;
-		}
-
-		if (!isRepeat &&
-			key is Key.LeftShift or Key.RightShift &&
-			(modifiers & ModifierKeys.Control) != 0 &&
-			(modifiers & ModifierKeys.Alt) == 0)
-		{
-			_armedShift = key;
-			_cancelled = false;
-			return true;
-		}
 
 		return false;
 	}
@@ -42,21 +41,25 @@ internal sealed class DirectionShortcutGesture
 		Key key,
 		ModifierKeys modifiers)
 	{
-		if (_armedShift is not Key armed)
+		bool chordKey = key is Key.LeftCtrl or Key.RightCtrl or
+			Key.LeftShift or Key.RightShift;
+		if (!chordKey)
 			return default;
 
 		if (key is Key.LeftCtrl or Key.RightCtrl)
-		{
-			_cancelled = true;
-			return default;
-		}
+			_pressedControlKeys.Remove(key);
+		else
+			_pressedShiftKeys.Remove(key);
 
-		if (key != armed)
+		if (!_armed)
 			return default;
+
+		if (_pressedControlKeys.Count != 0 || _pressedShiftKeys.Count != 0)
+			return new DirectionShortcutKeyUpResult(true, null);
 
 		ParagraphDirection? direction = !_cancelled &&
-			(modifiers & ModifierKeys.Control) != 0
-				? armed == Key.RightShift
+			_directionShift is Key shift
+				? shift == Key.RightShift
 					? ParagraphDirection.RightToLeft
 					: ParagraphDirection.LeftToRight
 				: null;
@@ -67,7 +70,27 @@ internal sealed class DirectionShortcutGesture
 
 	public void Reset()
 	{
-		_armedShift = null;
+		_pressedControlKeys.Clear();
+		_pressedShiftKeys.Clear();
+		_directionShift = null;
+		_armed = false;
+		_cancelled = false;
+	}
+
+	private void TryArm(ModifierKeys modifiers)
+	{
+		if (_armed ||
+			_pressedControlKeys.Count == 0 ||
+			_pressedShiftKeys.Count == 0 ||
+			(modifiers & (ModifierKeys.Alt | ModifierKeys.Windows)) != 0)
+		{
+			return;
+		}
+
+		_directionShift = _pressedShiftKeys.Contains(Key.RightShift)
+			? Key.RightShift
+			: Key.LeftShift;
+		_armed = true;
 		_cancelled = false;
 	}
 }

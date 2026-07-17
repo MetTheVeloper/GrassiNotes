@@ -19,6 +19,9 @@ internal sealed class EditorFormattingController
 {
 	private readonly RichTextBox _editor;
 	private readonly FontFamily _appFont;
+	private ParagraphTypingState _lastTypingState =
+		ParagraphTypingState.ForDirection(ParagraphDirection.LeftToRight);
+	private bool _restoringEmptyDocument;
 
 	public EditorFormattingController(RichTextBox editor, FontFamily appFont)
 	{
@@ -35,6 +38,7 @@ internal sealed class EditorFormattingController
 		foreach (Paragraph paragraph in paragraphs)
 			ApplyDirectionToParagraph(paragraph, direction);
 
+		_lastTypingState = ParagraphTypingState.ForDirection(direction);
 		_editor.Focus();
 	}
 
@@ -57,6 +61,9 @@ internal sealed class EditorFormattingController
 				NormalizeListGeometry(list);
 			}
 		}
+
+		if (paragraphs.Count != 0)
+			_lastTypingState = ParagraphTypingState.From(paragraphs[^1]);
 
 		_editor.Focus();
 	}
@@ -83,15 +90,40 @@ internal sealed class EditorFormattingController
 
 	public void ToggleList(RoutedUICommand command)
 	{
-		ParagraphDirection direction = DirectionAtCaret();
+		List<Paragraph> paragraphsBefore =
+			SelectedParagraphs().Distinct().ToList();
+		if (paragraphsBefore.Count == 0 &&
+			_editor.CaretPosition.Paragraph is Paragraph currentBefore)
+		{
+			paragraphsBefore.Add(currentBefore);
+		}
+
+		List<ParagraphTypingState> states =
+			paragraphsBefore.Select(ParagraphTypingState.From).ToList();
+
 		command.Execute(null, _editor);
 
-		List<Paragraph> paragraphs = SelectedParagraphs().Distinct().ToList();
-		if (paragraphs.Count == 0 && _editor.CaretPosition.Paragraph is Paragraph current)
-			paragraphs.Add(current);
+		List<Paragraph> paragraphsAfter = paragraphsBefore
+			.Where(paragraph => paragraph.Parent != null)
+			.ToList();
+		if (paragraphsAfter.Count == 0)
+			paragraphsAfter = SelectedParagraphs().Distinct().ToList();
+		if (paragraphsAfter.Count == 0 &&
+			_editor.CaretPosition.Paragraph is Paragraph currentAfter)
+		{
+			paragraphsAfter.Add(currentAfter);
+		}
 
-		foreach (Paragraph paragraph in paragraphs)
-			ApplyDirectionToParagraph(paragraph, direction);
+		for (int index = 0; index < paragraphsAfter.Count; index++)
+		{
+			ParagraphTypingState state = states.Count == 0
+				? _lastTypingState
+				: states[Math.Min(index, states.Count - 1)];
+			ApplyTypingStateToParagraph(paragraphsAfter[index], state);
+		}
+
+		if (states.Count != 0)
+			_lastTypingState = states[^1];
 
 		_editor.Focus();
 	}
@@ -120,6 +152,7 @@ internal sealed class EditorFormattingController
 		}
 
 		ApplyDirectionToParagraph(after, direction);
+		_lastTypingState = ParagraphTypingState.From(after);
 	}
 
 	public void ApplyHeading(int level)
@@ -133,6 +166,7 @@ internal sealed class EditorFormattingController
 				ParagraphStyleFormatter.ApplyHeading(paragraph, level, _appFont);
 
 			ApplyDirectionToParagraph(paragraph, direction);
+			_lastTypingState = ParagraphTypingState.From(paragraph);
 		}
 
 		_editor.Focus();
@@ -149,6 +183,47 @@ internal sealed class EditorFormattingController
 		Paragraph? paragraph = _editor.CaretPosition.Paragraph;
 		if (paragraph != null)
 			ApplyDirectionToParagraph(paragraph, DirectionOf(paragraph));
+	}
+
+	public void RememberTypingState()
+	{
+		if (_restoringEmptyDocument) return;
+
+		List<Paragraph> paragraphs = SelectedParagraphs().Distinct().ToList();
+		Paragraph? source = paragraphs.Count != 0
+			? paragraphs[^1]
+			: _editor.CaretPosition.Paragraph;
+		if (source != null && !IsDocumentEmpty())
+			_lastTypingState = ParagraphTypingState.From(source);
+	}
+
+	public void RestoreTypingStateIfDocumentEmpty()
+	{
+		if (_restoringEmptyDocument || !IsDocumentEmpty()) return;
+
+		Paragraph? paragraph = _editor.CaretPosition.Paragraph ??
+			EnumerateParagraphs(_editor.Document.Blocks).FirstOrDefault();
+
+		try
+		{
+			_restoringEmptyDocument = true;
+			if (paragraph == null)
+			{
+				paragraph = new Paragraph();
+				_editor.Document.Blocks.Add(paragraph);
+				_editor.CaretPosition = paragraph.ContentStart;
+				_editor.Selection.Select(
+					_editor.CaretPosition,
+					_editor.CaretPosition);
+			}
+
+			ParagraphStyleFormatter.ApplyNormal(paragraph, _appFont);
+			ApplyTypingStateToParagraph(paragraph, _lastTypingState);
+		}
+		finally
+		{
+			_restoringEmptyDocument = false;
+		}
 	}
 
 	public static void RefreshAutomaticTextColors(
@@ -180,9 +255,16 @@ internal sealed class EditorFormattingController
 	internal static void ApplyDirectionToParagraph(
 		Paragraph paragraph,
 		ParagraphDirection direction)
+		=> ApplyTypingStateToParagraph(
+			paragraph,
+			ParagraphTypingState.ForDirection(direction));
+
+	private static void ApplyTypingStateToParagraph(
+		Paragraph paragraph,
+		ParagraphTypingState state)
 	{
-		FlowDirection flowDirection = FlowFor(direction);
-		TextAlignment textAlignment = AlignmentFor(direction);
+		FlowDirection flowDirection = FlowFor(state.Direction);
+		TextAlignment textAlignment = state.Alignment;
 
 		paragraph.SetValue(FrameworkElement.FlowDirectionProperty, flowDirection);
 		paragraph.SetValue(Block.TextAlignmentProperty, textAlignment);
@@ -204,6 +286,12 @@ internal sealed class EditorFormattingController
 			}
 		}
 	}
+
+	private bool IsDocumentEmpty() =>
+		string.IsNullOrWhiteSpace(
+			new TextRange(
+				_editor.Document.ContentStart,
+				_editor.Document.ContentEnd).Text);
 
 	internal static IEnumerable<Paragraph> EnumerateParagraphs(BlockCollection blocks)
 	{
@@ -318,4 +406,16 @@ internal sealed class EditorFormattingController
 	private static bool IsAutomaticThemeColor(System.Windows.Media.Color color) =>
 		color == ((SolidColorBrush)ThemePalette.Dark.Text).Color ||
 		color == ((SolidColorBrush)ThemePalette.Light.Text).Color;
+
+	private readonly record struct ParagraphTypingState(
+		ParagraphDirection Direction,
+		TextAlignment Alignment)
+	{
+		public static ParagraphTypingState From(Paragraph paragraph) =>
+			new(DirectionOf(paragraph), paragraph.TextAlignment);
+
+		public static ParagraphTypingState ForDirection(
+			ParagraphDirection direction) =>
+			new(direction, AlignmentFor(direction));
+	}
 }

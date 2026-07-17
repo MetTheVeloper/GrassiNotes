@@ -53,16 +53,20 @@ internal static class Program
 			DirectionShortcutWaitsForCleanKeyUp(editor, formatting);
 			AlignmentCommandsPreserveFlow(editor, formatting, host);
 			TypingAndEnterKeepVisualAlignment(editor, formatting, host);
+			DeletingAllTextKeepsTheLastParagraphState(editor, formatting);
 			HeadingEnterCreatesNormalParagraph(editor, formatting);
 			ListItemsStayOnTheIntendedSide(editor, formatting, host);
+			TurningSelectedRtlParagraphsIntoListsPreservesDirection(
+				editor,
+				formatting);
 			BulletsAndNumbersUseTheSameTextIndent(editor, formatting, host);
 			ListMarkersRenderInsideTheViewport(editor, formatting);
 			AutomaticTextColorTracksTheme(editor, formatting);
 			ZoomChangesRenderedMetricsWithoutChangingFontSizes(editor, host);
 			NativeDocumentZoomRoundTrips();
-			AssertEqual("2.2.2", AppVersion.Current, "displayed application version");
+			AssertEqual("2.2.3", AppVersion.Current, "displayed application version");
 			AssertEqual(
-				"Untitled 1 \u2014 GrassiNotes v. 2.2.2",
+				"Untitled 1 \u2014 GrassiNotes v. 2.2.3",
 				AppVersion.WindowTitle("Untitled 1"),
 				"versioned document window title");
 			HeaderLogoUsesThemeSvgVariants();
@@ -122,6 +126,9 @@ internal static class Program
 		DirectionShortcutGesture gesture = new DirectionShortcutGesture();
 
 		AssertTrue(
+			!gesture.OnKeyDown(Key.LeftCtrl, ModifierKeys.Control),
+			"Control-first chord waits for Shift");
+		AssertTrue(
 			gesture.OnKeyDown(
 				Key.RightShift,
 				ModifierKeys.Control | ModifierKeys.Shift),
@@ -131,12 +138,20 @@ internal static class Program
 			paragraph.FlowDirection,
 			"direction does not change on key-down");
 
+		DirectionShortcutKeyUpResult firstRelease =
+			gesture.OnKeyUp(Key.LeftCtrl, ModifierKeys.Shift);
+		AssertTrue(firstRelease.Handled, "first chord release is suppressed");
+		AssertEqual<ParagraphDirection?>(
+			null,
+			firstRelease.Direction,
+			"direction waits until both chord keys are released");
+
 		DirectionShortcutKeyUpResult completed =
-			gesture.OnKeyUp(Key.RightShift, ModifierKeys.Control);
+			gesture.OnKeyUp(Key.RightShift, ModifierKeys.None);
 		AssertEqual<ParagraphDirection?>(
 			ParagraphDirection.RightToLeft,
 			completed.Direction,
-			"clean key-up resolves RTL");
+			"Control-first chord resolves RTL regardless of release order");
 		formatting.ApplyDirection(completed.Direction!.Value);
 		AssertEqual(
 			FlowDirection.RightToLeft,
@@ -144,6 +159,28 @@ internal static class Program
 			"clean key-up applies RTL");
 
 		formatting.ApplyDirection(ParagraphDirection.LeftToRight);
+		AssertTrue(
+			!gesture.OnKeyDown(Key.RightShift, ModifierKeys.Shift),
+			"Shift-first chord waits for Control");
+		AssertTrue(
+			gesture.OnKeyDown(
+				Key.LeftCtrl,
+				ModifierKeys.Control | ModifierKeys.Shift),
+			"Shift-first chord starts armed");
+		firstRelease = gesture.OnKeyUp(Key.RightShift, ModifierKeys.Control);
+		AssertEqual<ParagraphDirection?>(
+			null,
+			firstRelease.Direction,
+			"Shift-first chord waits for Control release");
+		completed = gesture.OnKeyUp(Key.LeftCtrl, ModifierKeys.None);
+		AssertEqual<ParagraphDirection?>(
+			ParagraphDirection.RightToLeft,
+			completed.Direction,
+			"Shift-first chord resolves RTL");
+
+		AssertTrue(
+			!gesture.OnKeyDown(Key.LeftCtrl, ModifierKeys.Control),
+			"selection chord waits for Shift");
 		AssertTrue(
 			gesture.OnKeyDown(
 				Key.RightShift,
@@ -156,7 +193,8 @@ internal static class Program
 			"arrow remains available to native selection");
 		DirectionShortcutKeyUpResult cancelled =
 			gesture.OnKeyUp(Key.RightShift, ModifierKeys.Control);
-		AssertTrue(cancelled.Handled, "cancelled shift key-up remains suppressed");
+		AssertTrue(cancelled.Handled, "cancelled first key-up remains suppressed");
+		cancelled = gesture.OnKeyUp(Key.LeftCtrl, ModifierKeys.None);
 		AssertEqual<ParagraphDirection?>(
 			null,
 			cancelled.Direction,
@@ -167,17 +205,20 @@ internal static class Program
 			"word selection preserves direction");
 
 		AssertTrue(
+			!gesture.OnKeyDown(Key.LeftShift, ModifierKeys.Shift),
+			"LTR Shift-first chord waits for Control");
+		AssertTrue(
 			gesture.OnKeyDown(
-				Key.LeftShift,
+				Key.RightCtrl,
 				ModifierKeys.Control | ModifierKeys.Shift),
-			"LTR chord starts armed");
-		gesture.OnKeyUp(Key.LeftCtrl, ModifierKeys.Shift);
-		DirectionShortcutKeyUpResult wrongReleaseOrder =
+			"LTR Shift-first chord starts armed");
+		gesture.OnKeyUp(Key.RightCtrl, ModifierKeys.Shift);
+		DirectionShortcutKeyUpResult ltrCompleted =
 			gesture.OnKeyUp(Key.LeftShift, ModifierKeys.None);
 		AssertEqual<ParagraphDirection?>(
-			null,
-			wrongReleaseOrder.Direction,
-			"releasing Control first cancels the chord");
+			ParagraphDirection.LeftToRight,
+			ltrCompleted.Direction,
+			"LTR chord ignores modifier press and release order");
 	}
 
 	private static void AlignmentCommandsPreserveFlow(
@@ -228,6 +269,34 @@ internal static class Program
 			throw new InvalidOperationException("Enter did not create a paragraph.");
 		AssertEqual(FlowDirection.RightToLeft, next.FlowDirection, "RTL Enter flow");
 		AssertAnchoredRight(next, editor, host, "RTL Enter visual position");
+	}
+
+	private static void DeletingAllTextKeepsTheLastParagraphState(
+		RichTextBox editor,
+		EditorFormattingController formatting)
+	{
+		Paragraph paragraph = Reset(editor, "last RTL paragraph");
+		formatting.ApplyDirection(ParagraphDirection.RightToLeft);
+		formatting.RememberTypingState();
+
+		editor.SelectAll();
+		formatting.RememberTypingState();
+		editor.Selection.Text = "";
+		formatting.RestoreTypingStateIfDocumentEmpty();
+		DrainDispatcher();
+
+		Paragraph empty = editor.CaretPosition.Paragraph ??
+			EditorFormattingController.EnumerateParagraphs(editor.Document.Blocks)
+				.FirstOrDefault() ??
+			throw new InvalidOperationException("Deleting all text removed the caret paragraph.");
+		AssertFormatting(
+			empty,
+			FlowDirection.RightToLeft,
+			TextAlignment.Left,
+			"empty editor preserves last RTL paragraph");
+		AssertTrue(
+			!ParagraphStyleFormatter.IsHeading(empty),
+			"empty editor resets paragraph style to Normal");
 	}
 
 	private static void HeadingEnterCreatesNormalParagraph(
@@ -290,6 +359,60 @@ internal static class Program
 				editor,
 				host,
 				$"{markerStyle} Enter visual position");
+		}
+	}
+
+	private static void TurningSelectedRtlParagraphsIntoListsPreservesDirection(
+		RichTextBox editor,
+		EditorFormattingController formatting)
+	{
+		foreach (RoutedUICommand command in new[]
+			{
+				EditingCommands.ToggleBullets,
+				EditingCommands.ToggleNumbering
+			})
+		{
+			Paragraph[] paragraphs = ResetParagraphs(
+				editor,
+				"RTL one",
+				"RTL two",
+				"RTL three");
+			editor.SelectAll();
+			formatting.ApplyDirection(ParagraphDirection.RightToLeft);
+			formatting.ToggleList(command);
+			DrainDispatcher();
+
+			System.Windows.Documents.List list = editor.Document.Blocks
+				.OfType<System.Windows.Documents.List>()
+				.Single();
+			AssertEqual(
+				FlowDirection.RightToLeft,
+				list.FlowDirection,
+				$"{command.Name} preserves RTL list flow");
+			foreach (Paragraph paragraph in paragraphs)
+			{
+				AssertFormatting(
+					paragraph,
+					FlowDirection.RightToLeft,
+					TextAlignment.Left,
+					$"{command.Name} preserves RTL paragraph state");
+			}
+
+			editor.CaretPosition = paragraphs[^1].ContentEnd;
+			editor.Selection.Select(editor.CaretPosition, editor.CaretPosition);
+			formatting.InsertParagraphBreak();
+			DrainDispatcher();
+			Paragraph continued = editor.CaretPosition.Paragraph ??
+				throw new InvalidOperationException(
+					$"{command.Name} did not create the next list item.");
+			AssertTrue(
+				continued.Parent is ListItem,
+				$"{command.Name} Enter continues the list");
+			AssertFormatting(
+				continued,
+				FlowDirection.RightToLeft,
+				TextAlignment.Left,
+				$"{command.Name} Enter preserves RTL paragraph state");
 		}
 	}
 
@@ -501,6 +624,9 @@ internal static class Program
 	{
 		DirectionShortcutGesture gesture = new DirectionShortcutGesture();
 		AssertTrue(
+			!gesture.OnKeyDown(Key.LeftCtrl, ModifierKeys.Control),
+			$"Ctrl+{shiftKey} waits for Shift");
+		AssertTrue(
 			gesture.OnKeyDown(
 				shiftKey,
 				ModifierKeys.Control | ModifierKeys.Shift),
@@ -508,6 +634,11 @@ internal static class Program
 		DirectionShortcutKeyUpResult result =
 			gesture.OnKeyUp(shiftKey, ModifierKeys.Control);
 		AssertTrue(result.Handled, $"Ctrl+{shiftKey} key-up handled");
+		AssertEqual<ParagraphDirection?>(
+			null,
+			result.Direction,
+			$"Ctrl+{shiftKey} waits for Control key-up");
+		result = gesture.OnKeyUp(Key.LeftCtrl, ModifierKeys.None);
 		AssertEqual<ParagraphDirection?>(
 			expectedDirection,
 			result.Direction,
@@ -629,6 +760,34 @@ internal static class Program
 		editor.Focus();
 		DrainDispatcher();
 		return paragraph;
+	}
+
+	private static Paragraph[] ResetParagraphs(
+		RichTextBox editor,
+		params string[] text)
+	{
+		EditorZoom.Apply(editor, 1.0);
+		Paragraph[] paragraphs = text
+			.Select(value => new Paragraph(new Run(value))
+			{
+				Margin = new Thickness(0.0)
+			})
+			.ToArray();
+		FlowDocument document = new FlowDocument
+		{
+			PagePadding = new Thickness(0.0),
+			FontFamily = AppFont,
+			FontSize = 14.0
+		};
+		foreach (Paragraph paragraph in paragraphs)
+			document.Blocks.Add(paragraph);
+
+		editor.Document = document;
+		editor.CaretPosition = paragraphs[^1].ContentEnd;
+		editor.Selection.Select(editor.CaretPosition, editor.CaretPosition);
+		editor.Focus();
+		DrainDispatcher();
+		return paragraphs;
 	}
 
 	private static Paragraph ResetAsList(
