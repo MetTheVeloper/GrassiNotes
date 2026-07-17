@@ -1030,7 +1030,7 @@ public sealed class MainWindow : Window
 			explicitChoice ? (rtl ? "RTL" : "LTR") : null);
 	}
 
-	internal RichTextBox EditorForTesting => _editor;
+	internal System.Windows.Controls.RichTextBox EditorForTesting => _editor;
 
 	internal void InitializeForTesting()
 	{
