@@ -1030,6 +1030,18 @@ public sealed class MainWindow : Window
 			explicitChoice ? (rtl ? "RTL" : "LTR") : null);
 	}
 
+	internal RichTextBox EditorForTesting => _editor;
+
+	internal void InitializeForTesting()
+	{
+		if (_active == null) NewDocument();
+	}
+
+	internal void SetSelectionDirectionForTesting(bool rtl)
+	{
+		SetSelectionDirection(rtl);
+	}
+
 	private void SetSelectionDirection(bool rtl)
 	{
 		List<Paragraph> paragraphs = SelectedParagraphs().Distinct().ToList();

@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
+using System.Windows.Threading;
 
 namespace GrassiNotes.DirectionTests;
 
@@ -13,9 +15,17 @@ internal static class Program
 	{
 		try
 		{
+			if (Application.Current == null)
+			{
+				_ = new Application
+				{
+					ShutdownMode = ShutdownMode.OnExplicitShutdown
+				};
+			}
 			ShortcutFormattingSetsBothProperties();
 			FlowDirectionForcesAlignmentAfterEveryChange();
 			ExplicitDirectionSurvivesParagraphReplacement();
+			MainWindowReappliesDirectionAfterRealTextChanged();
 			EnterFormattingInheritsBothProperties();
 			HeadingEnterCreatesNormalParagraph();
 			ListFormattingStaysAligned();
@@ -27,6 +37,51 @@ internal static class Program
 			Console.Error.WriteLine(exception);
 			return 1;
 		}
+	}
+
+	private static void MainWindowReappliesDirectionAfterRealTextChanged()
+	{
+		MainWindow window = new MainWindow(
+			startHidden: true,
+			appFont: new System.Windows.Media.FontFamily("Segoe UI"));
+		window.InitializeForTesting();
+		RichTextBox editor = window.EditorForTesting;
+		Paragraph paragraph = editor.Document.Blocks.OfType<Paragraph>().First();
+		editor.CaretPosition = paragraph.ContentEnd;
+		window.SetSelectionDirectionForTesting(rtl: true);
+
+		AssertFormatting(paragraph, FlowDirection.RightToLeft, TextAlignment.Right, "RTL");
+
+		bool scheduledReset = false;
+		editor.TextChanged += delegate
+		{
+			if (scheduledReset) return;
+			scheduledReset = true;
+			editor.Dispatcher.BeginInvoke((Action)delegate
+			{
+				Paragraph? current = editor.CaretPosition.Paragraph;
+				if (current != null)
+					current.SetValue(Block.TextAlignmentProperty, TextAlignment.Left);
+			}, DispatcherPriority.Input);
+		};
+
+		editor.SelectAll();
+		editor.Selection.Text = "new character";
+		DrainDispatcher();
+
+		Paragraph result = editor.CaretPosition.Paragraph ??
+			throw new InvalidOperationException("The editor did not retain a paragraph after typing.");
+		AssertFormatting(result, FlowDirection.RightToLeft, TextAlignment.Right, "RTL");
+	}
+
+	private static void DrainDispatcher()
+	{
+		DispatcherFrame frame = new DispatcherFrame();
+		Dispatcher.CurrentDispatcher.BeginInvoke((Action)delegate
+		{
+			frame.Continue = false;
+		}, DispatcherPriority.ApplicationIdle);
+		Dispatcher.PushFrame(frame);
 	}
 
 	private static void ExplicitDirectionSurvivesParagraphReplacement()
