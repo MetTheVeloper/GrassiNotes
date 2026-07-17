@@ -35,7 +35,6 @@ internal sealed class EditorFormattingController
 		foreach (Paragraph paragraph in paragraphs)
 			ApplyDirectionToParagraph(paragraph, direction);
 
-		ApplyTypingDirection(direction);
 		_editor.Focus();
 	}
 
@@ -120,7 +119,6 @@ internal sealed class EditorFormattingController
 		}
 
 		ApplyDirectionToParagraph(after, direction);
-		ApplyTypingDirection(direction);
 	}
 
 	public void ApplyHeading(int level)
@@ -221,23 +219,6 @@ internal sealed class EditorFormattingController
 		_editor.Selection.ApplyPropertyValue(TextElement.FontSizeProperty, 14.0);
 		_editor.Selection.ApplyPropertyValue(TextElement.FontWeightProperty, FontWeights.Normal);
 		_editor.Selection.ApplyPropertyValue(TextElement.FontStyleProperty, FontStyles.Normal);
-	}
-
-	private void ApplyTypingDirection(ParagraphDirection direction)
-	{
-		try
-		{
-			_editor.Selection.ApplyPropertyValue(
-				FlowDocument.FlowDirectionProperty,
-				FlowFor(direction));
-			_editor.Selection.ApplyPropertyValue(
-				Block.TextAlignmentProperty,
-				AlignmentFor(direction));
-		}
-		catch (InvalidOperationException)
-		{
-			// The paragraph values above remain the authoritative formatting.
-		}
 	}
 
 	private IEnumerable<Paragraph> SelectedParagraphs()
