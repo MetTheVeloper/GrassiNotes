@@ -1,0 +1,162 @@
+name: Build GrassiNotes for Windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_NOLOGO: "1"
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Read application version
+        id: version
+        shell: pwsh
+        run: |
+          [xml]$project = Get-Content .\GrassiNotes.csproj
+          $versionNode = $project.Project.PropertyGroup | Where-Object { $_.Version } | Select-Object -First 1
+          $version = [string]$versionNode.Version
+          if ([string]::IsNullOrWhiteSpace($version)) {
+            throw "Version was not found in GrassiNotes.csproj"
+          }
+          "APP_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Building GrassiNotes $version"
+
+      - name: Verify release tag matches project version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $expected = "v$env:APP_VERSION"
+          $actual = "${{ github.ref_name }}"
+          if ($actual -ne $expected) {
+            throw "Tag '$actual' does not match project version '$expected'."
+          }
+
+      - name: Restore dependencies
+        shell: pwsh
+        run: dotnet restore .\GrassiNotes.csproj
+
+      - name: Publish self-contained x64 application
+        shell: pwsh
+        run: |
+          dotnet publish .\GrassiNotes.csproj `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:DebugType=None `
+            -p:DebugSymbols=false `
+            -o .\dist\portable
+
+          Copy-Item .\dist\portable\GrassiNotes.exe ".\dist\GrassiNotes-$env:APP_VERSION-x64.exe"
+          Copy-Item .\README-FA.md .\dist\portable\README-FA.md
+
+      - name: Create portable ZIP
+        shell: pwsh
+        run: |
+          $zip = ".\dist\GrassiNotes-Portable-$env:APP_VERSION.zip"
+          if (Test-Path $zip) { Remove-Item $zip -Force }
+          Compress-Archive -Path .\dist\portable\* -DestinationPath $zip -CompressionLevel Optimal
+
+      - name: Download and verify Inno Setup
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP "innosetup-7.0.2-x64.exe"
+          Invoke-WebRequest `
+            -Uri "https://github.com/jrsoftware/issrc/releases/download/is-7_0_2/innosetup-7.0.2-x64.exe" `
+            -OutFile $installer
+
+          gh release verify-asset $installer --repo jrsoftware/issrc
+
+          $installDir = Join-Path $env:RUNNER_TEMP "InnoSetup7"
+          $process = Start-Process `
+            -FilePath $installer `
+            -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', "/DIR=$installDir") `
+            -Wait -PassThru
+
+          if ($process.ExitCode -ne 0) {
+            throw "Inno Setup installation failed with exit code $($process.ExitCode)."
+          }
+
+          "INNO_ISCC=$installDir\ISCC.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build Windows installer
+        shell: pwsh
+        run: |
+          & $env:INNO_ISCC .\installer\GrassiNotes.iss
+          if ($LASTEXITCODE -ne 0) {
+            throw "Inno Setup compiler failed with exit code $LASTEXITCODE."
+          }
+
+      - name: Generate SHA-256 checksums
+        shell: pwsh
+        run: |
+          $files = @(
+            ".\dist\GrassiNotes-$env:APP_VERSION-x64.exe",
+            ".\dist\GrassiNotes-Portable-$env:APP_VERSION.zip",
+            ".\dist\GrassiNotes-Setup-$env:APP_VERSION.exe"
+          )
+          $lines = foreach ($file in $files) {
+            $hash = (Get-FileHash $file -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $([System.IO.Path]::GetFileName($file))"
+          }
+          $lines | Set-Content ".\dist\GrassiNotes-$env:APP_VERSION-SHA256.txt" -Encoding ascii
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: GrassiNotes-${{ steps.version.outputs.version }}-Windows
+          path: |
+            dist/GrassiNotes-${{ steps.version.outputs.version }}-x64.exe
+            dist/GrassiNotes-Portable-${{ steps.version.outputs.version }}.zip
+            dist/GrassiNotes-Setup-${{ steps.version.outputs.version }}.exe
+            dist/GrassiNotes-${{ steps.version.outputs.version }}-SHA256.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish files to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $files = @(
+            ".\dist\GrassiNotes-$env:APP_VERSION-x64.exe",
+            ".\dist\GrassiNotes-Portable-$env:APP_VERSION.zip",
+            ".\dist\GrassiNotes-Setup-$env:APP_VERSION.exe",
+            ".\dist\GrassiNotes-$env:APP_VERSION-SHA256.txt"
+          )
+
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag @files --clobber
+          }
+          else {
+            gh release create $tag @files `
+              --title "GrassiNotes $env:APP_VERSION" `
+              --generate-notes
+          }
